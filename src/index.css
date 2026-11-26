@@ -1,0 +1,325 @@
+@import "tailwindcss";
+/* OPT: 1.1 — katex.min.css y sus fuentes se cargan de forma diferida desde katexLoader.ts */
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+@layer base {
+  :root,
+  [data-theme="light"] {
+    --font-sans: "Segoe UI", "Plus Jakarta Sans", -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+    --font-mono: "Cascadia Mono", "JetBrains Mono", Consolas, ui-monospace, monospace;
+    --ui-bg: #f8fafc;
+    --ui-surface: #ffffff;
+    --ui-surface-alt: #f1f5f9;
+    --ui-border: #e2e8f0;
+    --ui-text: #0f172a;
+    --ui-text-muted: #64748b;
+    --ui-accent: #2563eb;
+    --ui-accent-hover: #1d4ed8;
+    --ui-accent-soft: #eff6ff;
+    --ui-accent-text: #1d4ed8;
+  }
+
+  [data-theme="dark"] {
+    --ui-bg: #020617;
+    --ui-surface: #0f172a;
+    --ui-surface-alt: #0b1120;
+    --ui-border: #1e293b;
+    --ui-text: #f1f5f9;
+    --ui-text-muted: #94a3b8;
+    --ui-accent: #2563eb;
+    --ui-accent-hover: #3b82f6;
+    --ui-accent-soft: rgba(37, 99, 235, 0.22);
+    --ui-accent-text: #93c5fd;
+  }
+
+  /* Cálida: Rojo, Naranja, Amarillo */
+  [data-theme="warm"] {
+    --ui-bg: #fffbeb;
+    --ui-surface: #fff7ed;
+    --ui-surface-alt: #fef3c7;
+    --ui-border: #fed7aa;
+    --ui-text: #451a03;
+    --ui-text-muted: #9a3412;
+    --ui-accent: #ea580c;
+    --ui-accent-hover: #dc2626;
+    --ui-accent-soft: #ffedd5;
+    --ui-accent-text: #9a3412;
+  }
+
+  /* Fría: Azul, Gris, Morado */
+  [data-theme="cool"] {
+    --ui-bg: #eef2ff;
+    --ui-surface: #f8fafc;
+    --ui-surface-alt: #e2e8f0;
+    --ui-border: #cbd5e1;
+    --ui-text: #0f172a;
+    --ui-text-muted: #475569;
+    --ui-accent: #6d28d9;
+    --ui-accent-hover: #4f46e5;
+    --ui-accent-soft: #e0e7ff;
+    --ui-accent-text: #5b21b6;
+  }
+
+  /* Natura: Verde, Amarillo */
+  [data-theme="nature"] {
+    --ui-bg: #f0fdf4;
+    --ui-surface: #fefce8;
+    --ui-surface-alt: #dcfce7;
+    --ui-border: #bbf7d0;
+    --ui-text: #14532d;
+    --ui-text-muted: #3f6212;
+    --ui-accent: #15803d;
+    --ui-accent-hover: #166534;
+    --ui-accent-soft: #fef9c3;
+    --ui-accent-text: #166534;
+  }
+
+  /* Plano: Azul de plano técnico (#0B2A4A, #1E5A8C, #4FD1E8) */
+  [data-theme="blueprint"] {
+    --ui-bg: #082039;
+    --ui-surface: #0b2a4a;
+    --ui-surface-alt: #1e5a8c;
+    --ui-border: #2c6ea4;
+    --ui-text: #e6f4ff;
+    --ui-text-muted: #9bc8ea;
+    --ui-accent: #4fd1e8;
+    --ui-accent-hover: #22b8cf;
+    --ui-accent-soft: rgba(79, 209, 232, 0.2);
+    --ui-accent-text: #7ee5f7;
+    --ui-accent-btn-text: #062138;
+  }
+
+  /* Sepia: Papel antiguo y tinta (#F3E7D3, #8B5E3C, #C2410C) */
+  [data-theme="sepia"] {
+    --ui-bg: #e9d7bc;
+    --ui-surface: #f3e7d3;
+    --ui-surface-alt: #e4cfa9;
+    --ui-border: #b9936c;
+    --ui-text: #3b2416;
+    --ui-text-muted: #6f4b32;
+    --ui-accent: #c2410c;
+    --ui-accent-hover: #9a3412;
+    --ui-accent-soft: rgba(194, 65, 12, 0.14);
+    --ui-accent-text: #9a3412;
+    --ui-accent-btn-text: #fff7ed;
+  }
+
+  /* Neón: Magenta y cian brillante (#12001F, #D946EF, #22D3EE) */
+  [data-theme="neon"] {
+    --ui-bg: #0b0014;
+    --ui-surface: #12001f;
+    --ui-surface-alt: #270642;
+    --ui-border: #862e9c;
+    --ui-text: #f5e8ff;
+    --ui-text-muted: #d8b4fe;
+    --ui-accent: #22d3ee;
+    --ui-accent-hover: #06b6d4;
+    --ui-accent-soft: rgba(217, 70, 239, 0.24);
+    --ui-accent-text: #67e8f9;
+    --ui-accent-btn-text: #0b0014;
+  }
+
+  html, body, #root {
+    height: 100%;
+    width: 100%;
+    margin: 0;
+    padding: 0;
+    overflow: hidden;
+    font-family: var(--font-sans);
+  }
+}
+
+.theme-bg {
+  background-color: var(--ui-bg);
+  color: var(--ui-text);
+}
+
+.theme-surface {
+  background-color: var(--ui-surface);
+  color: var(--ui-text);
+  border-color: var(--ui-border);
+}
+
+.theme-surface-alt {
+  background-color: var(--ui-surface-alt);
+  color: var(--ui-text);
+  border-color: var(--ui-border);
+}
+
+.theme-border {
+  border-color: var(--ui-border);
+}
+
+.theme-accent-btn {
+  background-color: var(--ui-accent);
+  color: var(--ui-accent-btn-text, #ffffff);
+}
+
+.theme-accent-btn:hover {
+  background-color: var(--ui-accent-hover);
+}
+
+.theme-accent-soft {
+  background-color: var(--ui-accent-soft);
+  color: var(--ui-accent-text);
+}
+
+.top-project-badge {
+  background-color: color-mix(in srgb, var(--ui-accent) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--ui-accent) 45%, transparent);
+  color: var(--ui-accent-text);
+  font-weight: 600;
+  transition: background-color 150ms ease, border-color 150ms ease;
+}
+
+.top-project-badge:hover {
+  background-color: color-mix(in srgb, var(--ui-accent) 18%, transparent);
+  border-color: color-mix(in srgb, var(--ui-accent) 62%, transparent);
+}
+
+.top-project-badge-icon {
+  color: var(--ui-accent-text);
+}
+
+.top-project-badge-editing {
+  background-color: var(--ui-surface);
+  color: var(--ui-text);
+  border: 2px solid var(--ui-accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--ui-accent) 22%, transparent);
+  font-weight: 600;
+}
+
+.font-mono-tabular {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Custom thin scrollbars for tool panels */
+.panel-scroll::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+.panel-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.panel-scroll::-webkit-scrollbar-thumb {
+  background: rgba(148, 163, 184, 0.35);
+  border-radius: 9999px;
+}
+
+.panel-scroll::-webkit-scrollbar-thumb:hover {
+  background: rgba(148, 163, 184, 0.55);
+}
+
+/* KaTeX rendering adjustments on canvas */
+.katex-canvas-node .katex {
+  font-size: 1em;
+  line-height: 1.25;
+}
+
+.katex-canvas-node .katex-display {
+  margin: 0;
+}
+
+.katex-tile .katex {
+  font-size: 0.92em;
+}
+
+@keyframes eqCaretBlink {
+  0%, 49% {
+    opacity: 1;
+  }
+  50%, 100% {
+    opacity: 0;
+  }
+}
+
+.eq-caret-marker {
+  position: relative;
+  display: inline-block;
+  width: 0;
+  height: 1.08em;
+  vertical-align: -0.18em;
+}
+
+.eq-caret-marker::after {
+  content: "";
+  position: absolute;
+  left: -1px;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  border-radius: 1px;
+  background-color: var(--ui-accent, #2563eb);
+  animation: eqCaretBlink 1.05s steps(2, start) infinite;
+}
+
+.eq-active-slot {
+  background-color: rgba(148, 163, 184, 0.35);
+  border-radius: 2px;
+  padding: 0 1px;
+  box-shadow: 0 0 0 1.5px rgba(100, 116, 139, 0.35);
+}
+
+/* Resaltado visual no intrusivo para errores ortográficos (CSS Custom Highlight API) */
+::highlight(abaco-spell-error) {
+  text-decoration-line: underline;
+  text-decoration-style: wavy;
+  text-decoration-color: #dc2626;
+  text-decoration-thickness: 1.5px;
+  text-underline-offset: 2px;
+}
+
+/* Visibilidad clara de selección y fichas de ecuación dentro del editor transparente */
+.rt-editable-surface::selection,
+.rt-editable-surface *::selection {
+  background-color: rgba(37, 99, 235, 0.28);
+}
+
+.rt-math-chip {
+  border-radius: 4px;
+  padding: 0 3px;
+  transition: background-color 120ms ease, box-shadow 120ms ease;
+}
+
+.rt-math-chip:hover {
+  background-color: rgba(37, 99, 235, 0.14);
+  box-shadow: 0 0 0 1px rgba(37, 99, 235, 0.38);
+}
+
+.rt-math-chip-active {
+  background-color: rgba(37, 99, 235, 0.1);
+  box-shadow: 0 0 0 1.5px rgba(37, 99, 235, 0.72);
+}
+
+@media print {
+  .no-print,
+  [data-export-ignore="true"] {
+    display: none !important;
+  }
+  body, html, #root, #root > div, main {
+    height: auto !important;
+    min-height: 0 !important;
+    overflow: visible !important;
+    background: #ffffff !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+  }
+  .print-sheet-page {
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
+  .print-sheet-page-break {
+    break-after: page;
+    page-break-after: always;
+  }
+}

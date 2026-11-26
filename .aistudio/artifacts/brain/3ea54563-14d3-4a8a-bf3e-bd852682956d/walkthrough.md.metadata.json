@@ -1,0 +1,4 @@
+{
+  "summary":  "Security audit summary and verification log covering HTML sanitization, KaTeX trust allowlisting, server path confinement, secret scanning, and dependency status for public open-source release.",
+  "updatedAt":  "2026-11-26T18:42:38.193412274Z"
+}

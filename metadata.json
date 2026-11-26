@@ -1,0 +1,8 @@
+{
+  "name": "Ábaco Pizarra Virtual",
+  "description": "Pizarra virtual interactiva, editor matemático en tiempo real y diagramación técnica local sin conexión.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

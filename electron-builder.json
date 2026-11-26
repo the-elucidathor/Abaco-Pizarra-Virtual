@@ -1,0 +1,31 @@
+{
+  "appId": "org.abaco.pizarravirtual",
+  "productName": "Ábaco Pizarra Virtual",
+  "directories": {
+    "output": "release-windows"
+  },
+  "files": [
+    "dist/**/*",
+    "electron/**/*",
+    "package.json"
+  ],
+  "publish": [
+    {
+      "provider": "github",
+      "owner": "the-elucidathor",
+      "repo": "Abaco-Pizarra-Virtual",
+      "releaseType": "release"
+    }
+  ],
+  "win": {
+    "target": ["nsis"],
+    "artifactName": "${productName}-Setup-${version}.${ext}"
+  },
+  "nsis": {
+    "oneClick": false,
+    "allowToChangeInstallationDirectory": true,
+    "createDesktopShortcut": true,
+    "createStartMenuShortcut": true,
+    "shortcutName": "Ábaco Pizarra Virtual"
+  }
+}

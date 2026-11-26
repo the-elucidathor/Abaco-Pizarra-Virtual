@@ -1,0 +1,30 @@
+# Dependencias
+node_modules/
+
+# Compilaciones y empaquetados
+dist/
+build/
+release/
+release-windows/
+coverage/
+
+# Datos locales generados en tiempo de ejecución
+local-data/
+
+# Variables de entorno y secretos (mantener .env.example)
+.env
+.env.*
+!.env.example
+
+# Registros y archivos temporales del sistema / editores
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.DS_Store
+Thumbs.db
+desktop.ini
+*.tmp
+*.bak
+*.swp
+*~
