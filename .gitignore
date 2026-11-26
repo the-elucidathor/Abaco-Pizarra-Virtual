@@ -3,7 +3,7 @@ node_modules/
 
 # Compilaciones y empaquetados
 dist/
-build/
+#build/
 release/
 release-windows/
 coverage/

@@ -2,7 +2,8 @@
   "appId": "org.abaco.pizarravirtual",
   "productName": "Ábaco Pizarra Virtual",
   "directories": {
-    "output": "release-windows"
+    "output": "release-windows",
+    "buildResources": "build"
   },
   "files": [
     "dist/**/*",
@@ -19,13 +20,24 @@
   ],
   "win": {
     "target": ["nsis"],
+    "icon": "build/icon.ico",
     "artifactName": "${productName}-Setup-${version}.${ext}"
   },
+  "fileAssociations": [
+    {
+      "ext": "pizarra",
+      "name": "Archivo de Ábaco Pizarra Virtual",
+      "description": "Documento de Ábaco Pizarra Virtual",
+      "icon": "build/pizarra.ico"
+    }
+  ],
   "nsis": {
     "oneClick": false,
     "allowToChangeInstallationDirectory": true,
     "createDesktopShortcut": true,
     "createStartMenuShortcut": true,
-    "shortcutName": "Ábaco Pizarra Virtual"
+    "shortcutName": "Ábaco Pizarra Virtual",
+    "license": "build/license.txt"
   }
 }
+

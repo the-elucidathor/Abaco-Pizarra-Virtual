@@ -1,0 +1,46 @@
+﻿======================================================================
+                      ÁBACO PIZARRA VIRTUAL
+        Pizarra interactiva y editor matemático sin conexión
+======================================================================
+
+  UNA HERRAMIENTA LIBRE DE COSTO PARA APRENDER Y ENSEÑAR
+
+  Ábaco Pizarra Virtual es una aplicación gratuita y sin fines de
+  lucro creada por The Elucidathor. Su propósito es poner a
+  disposición de estudiantes y docentes una herramienta de trabajo de
+  fácil acceso para escribir, graficar, diagramar y resolver
+  problemas matemáticos y técnicos, sin depender de internet.
+
+----------------------------------------------------------------------
+
+  CÓMO FUE CREADA Y CÓDIGO ABIERTO
+
+  Esta aplicación fue desarrollada con la asistencia de Google AI
+  Studio y se distribuye como software libre bajo la Licencia MIT.
+
+  Código fuente y actualizaciones oficiales:
+  https://github.com/the-elucidathor/Abaco-Pizarra-Virtual
+
+----------------------------------------------------------------------
+
+  AVISO LEGAL Y EXENCIÓN DE RESPONSABILIDAD (LICENCIA MIT)
+
+  Copyright (c) 2026 The Elucidathor
+
+  Se concede permiso, de forma gratuita, a cualquier persona que
+  obtenga una copia de este software y de los archivos de
+  documentación asociados, para utilizar el software sin restricción,
+  incluyendo sin limitación los derechos a usar, copiar, modificar,
+  fusionar, publicar, distribuir, sublicenciar y/o vender copias del
+  software.
+
+  EL SOFTWARE SE ENTREGA "TAL CUAL", SIN GARANTÍA DE NINGÚN TIPO,
+  EXPRESA O IMPLÍCITA. EN NINGÚN CASO EL AUTOR O LOS TITULARES DE LOS
+  DERECHOS DE AUTOR SERÁN RESPONSABLES DE NINGUNA RECLAMACIÓN, DAÑO O
+  PÉRDIDA DE DATOS DERIVADA DEL USO DE ESTE SOFTWARE.
+
+----------------------------------------------------------------------
+
+  ¡Gracias por usarla!
+
+======================================================================
