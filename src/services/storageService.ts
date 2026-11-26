@@ -17,6 +17,8 @@ const STORE_FOLDERS = 'folders';
 const STORE_SNAPSHOTS = 'snapshots';
 const SETTINGS_KEY = 'abaco_settings_v1';
 const LAST_PROJECT_KEY = 'abaco_last_project_id_v1';
+const VIEWPORT_CACHE_KEY = 'abaco_viewport_cache_v1';
+const MAX_CACHED_VIEWPORT_PROJECTS = 50;
 
 interface StoredSnapshot {
   snapshotId: string;
@@ -116,6 +118,7 @@ const VALID_THEMES = new Set([
   'blueprint',
   'sepia',
   'neon',
+  'aurora',
 ]);
 
 const VALID_CANVAS_BG_MODES = new Set([
@@ -227,6 +230,121 @@ export function getLastOpenedProjectId(): string | null {
 
 export function setLastOpenedProjectId(id: string): void {
   localStorage.setItem(LAST_PROJECT_KEY, id);
+}
+
+interface CachedViewportEntry {
+  panX: number;
+  panY: number;
+  zoom: number;
+}
+
+interface CachedProjectViewports {
+  updatedAt: number;
+  activeBoardId: string;
+  viewports: Record<string, CachedViewportEntry>;
+}
+
+function readViewportCacheMap(): Record<string, CachedProjectViewports> {
+  try {
+    const raw = localStorage.getItem(VIEWPORT_CACHE_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' ? (parsed as Record<string, CachedProjectViewports>) : {};
+  } catch {
+    return {};
+  }
+}
+
+function writeViewportCacheMap(map: Record<string, CachedProjectViewports>): void {
+  try {
+    const entries = Object.entries(map)
+      .sort((a, b) => (b[1]?.updatedAt || 0) - (a[1]?.updatedAt || 0))
+      .slice(0, MAX_CACHED_VIEWPORT_PROJECTS);
+    localStorage.setItem(VIEWPORT_CACHE_KEY, JSON.stringify(Object.fromEntries(entries)));
+  } catch {
+    // Ignorar error de cuota en localStorage
+  }
+}
+
+// Guarda de forma síncrona el zoom/pan de cada tablero del proyecto para sobrevivir cierres abruptos
+export function saveProjectViewportCacheSync(project: WhiteboardProject): void {
+  if (!project?.id || !Array.isArray(project.boards)) return;
+  const viewports: Record<string, CachedViewportEntry> = {};
+  for (const board of project.boards) {
+    if (!board?.id || !board.viewport) continue;
+    const { panX, panY, zoom } = board.viewport;
+    if (
+      Number.isFinite(panX) &&
+      Number.isFinite(panY) &&
+      Number.isFinite(zoom) &&
+      zoom > 0
+    ) {
+      viewports[board.id] = { panX, panY, zoom };
+    }
+  }
+  const map = readViewportCacheMap();
+  map[project.id] = {
+    updatedAt:
+      typeof project.updatedAt === 'number' && Number.isFinite(project.updatedAt)
+        ? project.updatedAt
+        : Date.now(),
+    activeBoardId: project.activeBoardId,
+    viewports,
+  };
+  writeViewportCacheMap(map);
+}
+
+export function deleteProjectViewportCacheSync(projectId: string): void {
+  if (!projectId) return;
+  const map = readViewportCacheMap();
+  if (projectId in map) {
+    delete map[projectId];
+    writeViewportCacheMap(map);
+  }
+}
+
+export function applyCachedViewportsToProject(project: WhiteboardProject): WhiteboardProject {
+  if (!project?.id || !Array.isArray(project.boards)) return project;
+  const map = readViewportCacheMap();
+  const cached = map[project.id];
+  if (!cached || cached.updatedAt < (project.updatedAt || 0)) {
+    return project;
+  }
+
+  let changed = false;
+  const nextBoards = project.boards.map((board) => {
+    const vp = cached.viewports?.[board.id];
+    if (
+      vp &&
+      Number.isFinite(vp.panX) &&
+      Number.isFinite(vp.panY) &&
+      Number.isFinite(vp.zoom) &&
+      vp.zoom > 0 &&
+      (vp.panX !== board.viewport.panX ||
+        vp.panY !== board.viewport.panY ||
+        vp.zoom !== board.viewport.zoom)
+    ) {
+      changed = true;
+      return { ...board, viewport: { panX: vp.panX, panY: vp.panY, zoom: vp.zoom } };
+    }
+    return board;
+  });
+
+  const nextActiveBoardId =
+    cached.activeBoardId && nextBoards.some((b) => b.id === cached.activeBoardId)
+      ? cached.activeBoardId
+      : project.activeBoardId;
+
+  if (!changed && nextActiveBoardId === project.activeBoardId) {
+    return project;
+  }
+
+  return {
+    ...project,
+    activeBoardId: nextActiveBoardId,
+    boards: nextBoards,
+    updatedAt: Math.max(project.updatedAt || 0, cached.updatedAt),
+  };
 }
 
 const DEFAULT_FOLDERS: FolderRecord[] = [
@@ -458,6 +576,7 @@ export async function saveProjectDetailed(
   try {
     await idbPut(STORE_PROJECTS, updated);
     setLastOpenedProjectId(updated.id);
+    saveProjectViewportCacheSync(updated);
   } catch (err) {
     console.error('[Ábaco] Error al guardar el proyecto localmente:', err);
     storageError =
@@ -574,17 +693,18 @@ export async function loadProject(id: string): Promise<WhiteboardProject | null>
         const serverProj: WhiteboardProject = await res.json();
         if (!local || serverProj.updatedAt >= local.updatedAt) {
           await idbPut(STORE_PROJECTS, serverProj);
-          return validateAndNormalizeProject(serverProj).project;
+          return applyCachedViewportsToProject(validateAndNormalizeProject(serverProj).project);
         }
       }
     } catch {
       // Offline safe
     }
   }
-  return local ? validateAndNormalizeProject(local).project : null;
+  return local ? applyCachedViewportsToProject(validateAndNormalizeProject(local).project) : null;
 }
 
 export async function deleteProject(id: string): Promise<void> {
+  deleteProjectViewportCacheSync(id);
   await idbDelete(STORE_PROJECTS, id);
   try {
     const allLocal = await idbGetAll<StoredSnapshot>(STORE_SNAPSHOTS);

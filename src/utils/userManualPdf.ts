@@ -249,7 +249,7 @@ class ManualPdfBuilder {
       },
       {
         title: 'Hojas con marco y exportación limpia',
-        body: 'Márgenes configurables en mm, recorte opcional al marco, 8 temas de interfaz, 6 colores de lienzo y exportación PNG/PDF transparente.',
+        body: 'Márgenes configurables en mm, recorte opcional al marco, 9 temas de interfaz, 6 colores de lienzo y exportación PNG/PDF transparente.',
       },
     ];
 
@@ -1204,7 +1204,7 @@ export function buildUserManualPdf(options?: BuildUserManualOptions): jsPDF {
   b.drawSectionTitle(
     '8',
     'Ecuaciones, gráficas, capas y apariencia del lienzo',
-    'Ecuaciones KaTeX con espacios, gráficas, importación, capas, colores y 8 temas.'
+    'Ecuaciones KaTeX con espacios, gráficas, importación, capas, colores y 9 temas.'
   );
   b.drawBullets([
     {
@@ -1228,14 +1228,14 @@ export function buildUserManualPdf(options?: BuildUserManualOptions): jsPDF {
       body: 'En Propiedades combina cualquier patrón de fondo (Blanco liso, Cuadriculado, Rayado, Punteado, Isométrico) con el Color del lienzo (Automático, Blanco, Grafito, Verde pizarra, Crema o Personalizado).',
     },
     {
-      lead: '8 temas y cursor de alto contraste',
-      body: 'En Configuración elige entre Claro, Oscuro, Cálida, Fría, Natura, Plano, Sepia y Neón, tamaño de cursor (22 a 44 px) y color de alto contraste.',
+      lead: '9 temas y cursor de alto contraste',
+      body: 'En Configuración elige entre Claro, Oscuro, Cálida, Fría, Natura, Plano, Sepia, Neón y Aurora, tamaño de cursor (22 a 44 px) y color de alto contraste.',
     },
   ]);
 
   b.drawIllustration(
     'apariencia',
-    'Figura 11 · Colores de lienzo (6 muestras), patrones de fondo (5 estilos) y los 8 temas de interfaz.',
+    'Figura 11 · Colores de lienzo (6 muestras), patrones de fondo (5 estilos) y los 9 temas de interfaz.',
     58
   );
 

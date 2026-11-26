@@ -76,7 +76,8 @@ export type ThemePreset =
   | 'nature'
   | 'blueprint'
   | 'sepia'
-  | 'neon';
+  | 'neon'
+  | 'aurora';
 
 export interface Layer {
   id: string;

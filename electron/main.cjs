@@ -1,10 +1,108 @@
-const { app, BrowserWindow, dialog, ipcMain, Notification } = require('electron');
+const { app, BrowserWindow, dialog, ipcMain, Notification, screen } = require('electron');
 const { autoUpdater } = require('electron-updater');
 const path = require('node:path');
 const fs = require('node:fs');
 
 let mainWindow = null;
 let updatePromptVisible = false;
+
+const DEFAULT_WINDOW_STATE = {
+  width: 1440,
+  height: 900,
+  isMaximized: false,
+};
+const MIN_WINDOW_WIDTH = 1024;
+const MIN_WINDOW_HEIGHT = 680;
+
+function getWindowStatePath() {
+  return path.join(app.getPath('userData'), 'window-state.json');
+}
+
+function isBoundsVisibleOnDisplays(bounds) {
+  if (!Number.isFinite(bounds.x) || !Number.isFinite(bounds.y)) return false;
+  const displays = screen.getAllDisplays();
+  if (!Array.isArray(displays) || displays.length === 0) return true;
+  return displays.some((display) => {
+    const area = display.workArea;
+    const overlapX = Math.max(
+      0,
+      Math.min(bounds.x + bounds.width, area.x + area.width) - Math.max(bounds.x, area.x)
+    );
+    const overlapY = Math.max(
+      0,
+      Math.min(bounds.y + bounds.height, area.y + area.height) - Math.max(bounds.y, area.y)
+    );
+    return overlapX >= 120 && overlapY >= 80;
+  });
+}
+
+function loadWindowState() {
+  try {
+    const statePath = getWindowStatePath();
+    if (!fs.existsSync(statePath)) return { ...DEFAULT_WINDOW_STATE };
+    const raw = fs.readFileSync(statePath, 'utf-8');
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object') return { ...DEFAULT_WINDOW_STATE };
+
+    const width =
+      typeof parsed.width === 'number' && Number.isFinite(parsed.width)
+        ? Math.max(MIN_WINDOW_WIDTH, Math.round(parsed.width))
+        : DEFAULT_WINDOW_STATE.width;
+    const height =
+      typeof parsed.height === 'number' && Number.isFinite(parsed.height)
+        ? Math.max(MIN_WINDOW_HEIGHT, Math.round(parsed.height))
+        : DEFAULT_WINDOW_STATE.height;
+    const isMaximized = Boolean(parsed.isMaximized);
+
+    const candidate = {
+      width,
+      height,
+      isMaximized,
+      ...(typeof parsed.x === 'number' && Number.isFinite(parsed.x)
+        ? { x: Math.round(parsed.x) }
+        : {}),
+      ...(typeof parsed.y === 'number' && Number.isFinite(parsed.y)
+        ? { y: Math.round(parsed.y) }
+        : {}),
+    };
+
+    if (
+      typeof candidate.x === 'number' &&
+      typeof candidate.y === 'number' &&
+      !isBoundsVisibleOnDisplays(candidate)
+    ) {
+      delete candidate.x;
+      delete candidate.y;
+    }
+
+    return candidate;
+  } catch {
+    return { ...DEFAULT_WINDOW_STATE };
+  }
+}
+
+function captureWindowState(win, fallbackState) {
+  if (!win || win.isDestroyed() || win.isMinimized()) {
+    return fallbackState;
+  }
+  const isMaximized = win.isMaximized();
+  const bounds = isMaximized ? win.getNormalBounds() : win.getBounds();
+  return {
+    width: Math.max(MIN_WINDOW_WIDTH, Math.round(bounds.width)),
+    height: Math.max(MIN_WINDOW_HEIGHT, Math.round(bounds.height)),
+    x: Math.round(bounds.x),
+    y: Math.round(bounds.y),
+    isMaximized,
+  };
+}
+
+function saveWindowStateSync(state) {
+  try {
+    fs.writeFileSync(getWindowStatePath(), JSON.stringify(state, null, 2), 'utf-8');
+  } catch {
+    // Ignorar error de escritura en disco al cerrar
+  }
+}
 
 function configureAutoUpdater() {
   // Descarga silenciosa en segundo plano e instalación automática al cerrar si el usuario pospone el reinicio
@@ -90,11 +188,27 @@ function configureAutoUpdater() {
 configureAutoUpdater();
 
 function createWindow() {
+  let windowState = loadWindowState();
+  let saveStateTimer = null;
+
+  const scheduleSaveWindowState = () => {
+    if (!mainWindow || mainWindow.isDestroyed()) return;
+    windowState = captureWindowState(mainWindow, windowState);
+    if (saveStateTimer) clearTimeout(saveStateTimer);
+    saveStateTimer = setTimeout(() => {
+      saveStateTimer = null;
+      saveWindowStateSync(windowState);
+    }, 250);
+  };
+
   mainWindow = new BrowserWindow({
-    width: 1440,
-    height: 900,
-    minWidth: 1024,
-    minHeight: 680,
+    width: windowState.width,
+    height: windowState.height,
+    ...(typeof windowState.x === 'number' && typeof windowState.y === 'number'
+      ? { x: windowState.x, y: windowState.y }
+      : {}),
+    minWidth: MIN_WINDOW_WIDTH,
+    minHeight: MIN_WINDOW_HEIGHT,
     title: 'Ábaco Pizarra Virtual',
     autoHideMenuBar: true,
     backgroundColor: '#f8fafc',
@@ -106,6 +220,23 @@ function createWindow() {
     },
   });
 
+  if (windowState.isMaximized) {
+    mainWindow.maximize();
+  }
+
+  mainWindow.on('resize', scheduleSaveWindowState);
+  mainWindow.on('move', scheduleSaveWindowState);
+  mainWindow.on('maximize', scheduleSaveWindowState);
+  mainWindow.on('unmaximize', scheduleSaveWindowState);
+  mainWindow.on('close', () => {
+    if (saveStateTimer) {
+      clearTimeout(saveStateTimer);
+      saveStateTimer = null;
+    }
+    windowState = captureWindowState(mainWindow, windowState);
+    saveWindowStateSync(windowState);
+  });
+
   mainWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
 
   if (process.env.VITE_DEV_SERVER_URL) {
@@ -115,6 +246,10 @@ function createWindow() {
   }
 
   mainWindow.on('closed', () => {
+    if (saveStateTimer) {
+      clearTimeout(saveStateTimer);
+      saveStateTimer = null;
+    }
     mainWindow = null;
   });
 }

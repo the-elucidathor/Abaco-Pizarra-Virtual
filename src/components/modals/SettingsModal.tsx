@@ -115,6 +115,12 @@ const THEME_OPTIONS: {
     subtitle: 'Magenta y cian brillante',
     swatches: ['#12001F', '#D946EF', '#22D3EE'],
   },
+  {
+    id: 'aurora',
+    name: 'Aurora',
+    subtitle: 'Obsidiana, esmeralda y oro',
+    swatches: ['#061613', '#10B981', '#FBBF24'],
+  },
 ];
 
 const SHORTCUTS = [

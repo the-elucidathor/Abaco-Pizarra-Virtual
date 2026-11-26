@@ -73,6 +73,7 @@ import {
   loadSheetWheelHintDismissed,
   saveProject,
   saveProjectDetailed,
+  saveProjectViewportCacheSync,
   saveSettings,
   saveSheetWheelHintDismissed,
 } from './services/storageService';
@@ -402,8 +403,10 @@ export default function App() {
   const settingsRef = useRef(settings);
   settingsRef.current = settings;
   const dirtyRef = useRef(false);
+  const viewportDirtyRef = useRef(false);
   const isCanvasInteractingRef = useRef(false); // OPT: 1.2
   const autoSaveDebounceTimerRef = useRef<number | null>(null); // OPT: 1.2
+  const viewportPersistTimerRef = useRef<number | null>(null);
   const viewportAnimRafRef = useRef<number | null>(null);
   const prevEffectiveBoardRef = useRef({
     key: `${settings.theme}|${settings.canvasBgMode}|${settings.canvasBgCustomColor}`,
@@ -636,11 +639,64 @@ export default function App() {
     }
   }, []);
 
+  const clearScheduledViewportPersist = useCallback(() => {
+    if (viewportPersistTimerRef.current !== null) {
+      window.clearTimeout(viewportPersistTimerRef.current);
+      viewportPersistTimerRef.current = null;
+    }
+  }, []);
+
+  const persistViewportIfNeeded = useCallback(async () => {
+    saveProjectViewportCacheSync(projectRef.current);
+    if (!viewportDirtyRef.current || isCanvasInteractingRef.current) return;
+    if (dirtyRef.current && !settingsRef.current.autoSaveEnabled) return;
+
+    const alsoFlushingDirty = dirtyRef.current && settingsRef.current.autoSaveEnabled;
+    viewportDirtyRef.current = false;
+    if (alsoFlushingDirty) {
+      dirtyRef.current = false;
+    }
+
+    try {
+      const res = await saveProjectDetailed(projectRef.current, false, {
+        skipVersionTrim: true,
+      });
+      if (!res.storageError) {
+        setLastSavedAt(res.project.updatedAt);
+        if (alsoFlushingDirty) {
+          setSaveStatus(dirtyRef.current ? 'unsaved' : 'saved');
+        }
+      } else {
+        viewportDirtyRef.current = true;
+        if (alsoFlushingDirty) {
+          dirtyRef.current = true;
+          setSaveStatus('unsaved');
+        }
+      }
+    } catch {
+      viewportDirtyRef.current = true;
+      if (alsoFlushingDirty) {
+        dirtyRef.current = true;
+      }
+    }
+  }, []);
+
+  const scheduleViewportPersist = useCallback(() => {
+    viewportDirtyRef.current = true;
+    clearScheduledViewportPersist();
+    viewportPersistTimerRef.current = window.setTimeout(() => {
+      viewportPersistTimerRef.current = null;
+      void persistViewportIfNeeded();
+    }, 280);
+  }, [clearScheduledViewportPersist, persistViewportIfNeeded]);
+
   const performAutosaveIfNeeded = useCallback(async () => {
     if (!settingsRef.current.autoSaveEnabled || !dirtyRef.current) return;
     if (isCanvasInteractingRef.current) return;
     setSaveStatus('saving');
     dirtyRef.current = false;
+    viewportDirtyRef.current = false;
+    clearScheduledViewportPersist();
     try {
       const res = await saveProjectDetailed(projectRef.current, false, {
         skipVersionTrim: true,
@@ -657,7 +713,48 @@ export default function App() {
       dirtyRef.current = true;
       setSaveStatus('unsaved');
     }
-  }, []);
+  }, [clearScheduledViewportPersist]);
+
+  const flushProjectPersistence = useCallback(async () => {
+    saveProjectViewportCacheSync(projectRef.current);
+    clearScheduledAutosave();
+    clearScheduledViewportPersist();
+
+    if (dirtyRef.current && settingsRef.current.autoSaveEnabled) {
+      dirtyRef.current = false;
+      viewportDirtyRef.current = false;
+      try {
+        const res = await saveProjectDetailed(projectRef.current, false, {
+          skipVersionTrim: true,
+        });
+        if (!res.storageError) {
+          setLastSavedAt(res.project.updatedAt);
+          setSaveStatus(dirtyRef.current ? 'unsaved' : 'saved');
+        } else {
+          dirtyRef.current = true;
+        }
+      } catch {
+        dirtyRef.current = true;
+      }
+      return;
+    }
+
+    if (viewportDirtyRef.current && (!dirtyRef.current || settingsRef.current.autoSaveEnabled)) {
+      viewportDirtyRef.current = false;
+      try {
+        const res = await saveProjectDetailed(projectRef.current, false, {
+          skipVersionTrim: true,
+        });
+        if (!res.storageError) {
+          setLastSavedAt(res.project.updatedAt);
+        } else {
+          viewportDirtyRef.current = true;
+        }
+      } catch {
+        viewportDirtyRef.current = true;
+      }
+    }
+  }, [clearScheduledAutosave, clearScheduledViewportPersist]);
 
   const scheduleDebouncedAutosave = useCallback(() => {
     clearScheduledAutosave();
@@ -681,11 +778,15 @@ export default function App() {
   const handleCanvasInteractionActiveChange = useCallback(
     (active: boolean) => {
       isCanvasInteractingRef.current = active;
-      if (!active && dirtyRef.current) {
-        scheduleDebouncedAutosave();
+      if (!active) {
+        if (dirtyRef.current) {
+          scheduleDebouncedAutosave();
+        } else if (viewportDirtyRef.current) {
+          scheduleViewportPersist();
+        }
       }
     },
-    [scheduleDebouncedAutosave]
+    [scheduleDebouncedAutosave, scheduleViewportPersist]
   );
 
   // OPT: 2.6 — Canal desacoplado de cursor (~30 Hz) sin provocar re-renders en App
@@ -699,7 +800,11 @@ export default function App() {
   }, []);
 
   const mutateActiveBoard = useCallback(
-    (updater: (board: Board) => Board, markDirty = true) => {
+    (
+      updater: (board: Board) => Board,
+      markDirty = true,
+      options?: { persistViewport?: boolean }
+    ) => {
       setProject((prev) => ({
         ...prev,
         updatedAt: Date.now(),
@@ -707,9 +812,11 @@ export default function App() {
       }));
       if (markDirty) {
         markProjectDirty();
+      } else if (options?.persistViewport) {
+        scheduleViewportPersist();
       }
     },
-    [markProjectDirty]
+    [markProjectDirty, scheduleViewportPersist]
   );
 
   const pushHistory = useCallback(
@@ -766,24 +873,39 @@ export default function App() {
     }
   }, [settings.autoSaveEnabled, settings.autoSaveIntervalSec, clearScheduledAutosave, scheduleDebouncedAutosave]);
 
+  // Mantiene sincronizada la caché síncrona de zoom/pan ante cualquier cambio del proyecto
+  useEffect(() => {
+    if (loadingInit) return;
+    saveProjectViewportCacheSync(project);
+  }, [project, loadingInit]);
+
   useEffect(() => {
     const onVisibilityChange = () => {
-      if (document.visibilityState === 'hidden' && dirtyRef.current && settingsRef.current.autoSaveEnabled) {
-        clearScheduledAutosave();
-        void performAutosaveIfNeeded();
+      if (document.visibilityState === 'hidden') {
+        void flushProjectPersistence();
       }
     };
+    const onPageExit = () => {
+      void flushProjectPersistence();
+    };
     document.addEventListener('visibilitychange', onVisibilityChange);
+    window.addEventListener('pagehide', onPageExit);
+    window.addEventListener('beforeunload', onPageExit);
     return () => {
       clearScheduledAutosave();
+      clearScheduledViewportPersist();
       document.removeEventListener('visibilitychange', onVisibilityChange);
+      window.removeEventListener('pagehide', onPageExit);
+      window.removeEventListener('beforeunload', onPageExit);
     };
-  }, [clearScheduledAutosave, performAutosaveIfNeeded]);
+  }, [clearScheduledAutosave, clearScheduledViewportPersist, flushProjectPersistence]);
 
   const handleSaveNow = useCallback(async () => {
     clearScheduledAutosave();
+    clearScheduledViewportPersist();
     setSaveStatus('saving');
     dirtyRef.current = false;
+    viewportDirtyRef.current = false;
     try {
       const res = await saveProjectDetailed(projectRef.current, true);
       if (res.storageError) {
@@ -807,7 +929,7 @@ export default function App() {
         'No se pudo guardar la nueva versión en el historial. Las versiones anteriores siguen intactas.'
       );
     }
-  }, [clearScheduledAutosave]);
+  }, [clearScheduledAutosave, clearScheduledViewportPersist]);
 
   const handleUndo = useCallback(() => {
     if (undoStack.length === 0) return;
@@ -1779,7 +1901,8 @@ export default function App() {
           ...b,
           viewport: { panX: cx - wx * newZoom, panY: cy - wy * newZoom, zoom: newZoom },
         }),
-        false
+        false,
+        { persistViewport: true }
       );
     },
     [activeBoard.viewport, mutateActiveBoard]
@@ -1791,23 +1914,27 @@ export default function App() {
 
   const zoomReset = useCallback(() => {
     const rect = stageRef.current?.getBoundingClientRect();
-    mutateActiveBoard((b) => {
-      if (isFixedSizeBoard(b) && b.pageWidth && b.pageHeight) {
-        const sheets = normalizarHojas(b);
-        const targetIdx = Math.max(0, Math.min(sheets.length - 1, activeSheetIndex));
-        return {
-          ...b,
-          viewport: computeCenteredViewportForPage(
-            b.pageWidth,
-            b.pageHeight,
-            rect?.width ?? 1000,
-            rect?.height ?? 700,
-            getSheetY(targetIdx, b.pageHeight)
-          ),
-        };
-      }
-      return { ...b, viewport: { panX: 80, panY: 60, zoom: 1 } };
-    }, false);
+    mutateActiveBoard(
+      (b) => {
+        if (isFixedSizeBoard(b) && b.pageWidth && b.pageHeight) {
+          const sheets = normalizarHojas(b);
+          const targetIdx = Math.max(0, Math.min(sheets.length - 1, activeSheetIndex));
+          return {
+            ...b,
+            viewport: computeCenteredViewportForPage(
+              b.pageWidth,
+              b.pageHeight,
+              rect?.width ?? 1000,
+              rect?.height ?? 700,
+              getSheetY(targetIdx, b.pageHeight)
+            ),
+          };
+        }
+        return { ...b, viewport: { panX: 80, panY: 60, zoom: 1 } };
+      },
+      false,
+      { persistViewport: true }
+    );
   }, [activeSheetIndex, mutateActiveBoard]);
 
   const fitContent = useCallback(() => {
@@ -1850,7 +1977,8 @@ export default function App() {
     const panY = viewH / 2 - (bbox.y + bbox.height / 2) * nextZoom;
     mutateActiveBoard(
       (b) => ({ ...b, viewport: { panX, panY, zoom: nextZoom } }),
-      false
+      false,
+      { persistViewport: true }
     );
   }, [activeBoard, mutateActiveBoard, zoomReset]);
 
@@ -1886,7 +2014,9 @@ export default function App() {
               panY: startVp.panY + (targetVp.panY - startVp.panY) * eased,
               zoom: startVp.zoom + (targetVp.zoom - startVp.zoom) * eased,
             };
-            mutateActiveBoard((b) => ({ ...b, viewport: nextVp }), false);
+            mutateActiveBoard((b) => ({ ...b, viewport: nextVp }), false, {
+              persistViewport: true,
+            });
             if (t < 1) {
               viewportAnimRafRef.current = window.requestAnimationFrame(step);
             } else {
@@ -1907,7 +2037,9 @@ export default function App() {
             rect?.height ?? 700,
             getSheetY(sheetIdx, pageH)
           );
-          mutateActiveBoard((b) => ({ ...b, viewport: fallbackVp }), false);
+          mutateActiveBoard((b) => ({ ...b, viewport: fallbackVp }), false, {
+            persistViewport: true,
+          });
         } catch {
           // ignore
         }
@@ -2974,6 +3106,7 @@ export default function App() {
         try {
           const parsed = JSON.parse(res.content) as WhiteboardProject;
           if (parsed && Array.isArray(parsed.boards)) {
+            await flushProjectPersistence();
             const loaded = applyProjectValidation({
               ...parsed,
               id: uid('proj'),
@@ -2985,6 +3118,12 @@ export default function App() {
             setRedoStack([]);
             setSelectedIds([]);
             setActiveSheetIndex(0);
+            dirtyRef.current = false;
+            viewportDirtyRef.current = false;
+            clearScheduledAutosave();
+            clearScheduledViewportPersist();
+            setSaveStatus('saved');
+            setLastSavedAt(loaded.updatedAt);
           }
         } catch {
           setErrorToast('El archivo seleccionado no es un proyecto .pizarra válido.');
@@ -2992,6 +3131,7 @@ export default function App() {
       }
       return;
     }
+    void flushProjectPersistence();
     pizarraOpenInputRef.current?.click();
   };
 
@@ -3200,7 +3340,11 @@ export default function App() {
           onNewProject={() =>
             setNewBoardModal({ open: true, mode: 'project', folderId: 'general' })
           }
-          onOpenProjectManager={() => setShowProjectManager(true)}
+          onOpenProjectManager={() => {
+            void flushProjectPersistence().finally(() => {
+              setShowProjectManager(true);
+            });
+          }}
           onOpenFilePizarra={handleOpenPizarraFile}
           onDownloadPizarra={() => {
             void import('./utils/exportEngine')
@@ -3276,7 +3420,12 @@ export default function App() {
           boards={project.boards}
           activeBoardId={activeBoard.id}
           onSelectBoard={(boardId) => {
-            setProject((prev) => ({ ...prev, activeBoardId: boardId }));
+            setProject((prev) => ({
+              ...prev,
+              activeBoardId: boardId,
+              updatedAt: Date.now(),
+            }));
+            scheduleViewportPersist();
             setSelectedIds([]);
             setEditingTextId(null);
             setEditingEquationId(null);
@@ -3584,7 +3733,11 @@ export default function App() {
               setShowExportModal(true);
             }}
             onCancelAreaExport={() => setAreaExportMode(false)}
-            onUpdateViewport={(vp) => mutateActiveBoard((b) => ({ ...b, viewport: vp }), false)}
+            onUpdateViewport={(vp) =>
+              mutateActiveBoard((b) => ({ ...b, viewport: vp }), false, {
+                persistViewport: true,
+              })
+            }
             onAddObject={handleAddObject}
             onUpdateObjects={handleUpdateObjects}
             onDeleteObjects={handleDeleteObjects}
@@ -3974,6 +4127,7 @@ export default function App() {
             const text = await file.text();
             const parsed = JSON.parse(text) as WhiteboardProject;
             if (parsed && Array.isArray(parsed.boards)) {
+              await flushProjectPersistence();
               const loaded = applyProjectValidation({
                 ...parsed,
                 id: uid('proj'),
@@ -3985,6 +4139,12 @@ export default function App() {
               setRedoStack([]);
               setSelectedIds([]);
               setActiveSheetIndex(0);
+              dirtyRef.current = false;
+              viewportDirtyRef.current = false;
+              clearScheduledAutosave();
+              clearScheduledViewportPersist();
+              setSaveStatus('saved');
+              setLastSavedAt(loaded.updatedAt);
             }
           } catch {
             setErrorToast('El archivo seleccionado no es un proyecto .pizarra válido.');
@@ -4131,6 +4291,7 @@ export default function App() {
         {showProjectManager && (
           <ProjectManagerModal
             currentProject={project}
+            onBeforeSwitchProject={flushProjectPersistence}
             onSelectProject={(loaded) => {
               const validated = applyProjectValidation(loaded);
               setProject(validated);
@@ -4140,7 +4301,9 @@ export default function App() {
               setEditingTextId(null);
               setActiveSheetIndex(0);
               dirtyRef.current = false;
+              viewportDirtyRef.current = false;
               clearScheduledAutosave();
+              clearScheduledViewportPersist();
               setSaveStatus('saved');
               setLastSavedAt(validated.updatedAt);
             }}
@@ -4335,6 +4498,7 @@ export default function App() {
               };
 
               if (newBoardModal.mode === 'project') {
+                await flushProjectPersistence();
                 const proj = createNewProject(
                   res.name,
                   newBoardModal.folderId || 'general',
@@ -4354,7 +4518,9 @@ export default function App() {
                 setExportAreaRect(null);
                 setActiveSheetIndex(0);
                 dirtyRef.current = false;
+                viewportDirtyRef.current = false;
                 clearScheduledAutosave();
+                clearScheduledViewportPersist();
                 setSaveStatus('saved');
                 setLastSavedAt(proj.updatedAt);
               } else {

@@ -37,7 +37,8 @@ export function getThemeCursorPalette(
 
   // Si el color del lienzo contradice el modo claro/oscuro del tema, prioriza legibilidad sobre el lienzo
   if (typeof boardIsDarkOverride === 'boolean') {
-    const themeIsDark = theme === 'dark' || theme === 'blueprint' || theme === 'neon';
+    const themeIsDark =
+      theme === 'dark' || theme === 'blueprint' || theme === 'neon' || theme === 'aurora';
     if (boardIsDarkOverride !== themeIsDark) {
       return boardIsDarkOverride
         ? {
@@ -83,6 +84,13 @@ export function getThemeCursorPalette(
         halo: '#12001f',
         outer: '#d946ef',
         accent: '#f0abfc',
+      };
+    case 'aurora':
+      return {
+        fill: '#fbbf24',
+        halo: '#061613',
+        outer: '#34d399',
+        accent: '#6ee7b7',
       };
     case 'warm':
       return {

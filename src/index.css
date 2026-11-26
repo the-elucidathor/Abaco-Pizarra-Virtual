@@ -120,6 +120,21 @@
     --ui-accent-btn-text: #0b0014;
   }
 
+  /* Aurora: Obsidiana, esmeralda y oro (#061613, #10B981, #FBBF24) */
+  [data-theme="aurora"] {
+    --ui-bg: #040d0b;
+    --ui-surface: #071915;
+    --ui-surface-alt: #0d2b24;
+    --ui-border: #175245;
+    --ui-text: #ecfdf5;
+    --ui-text-muted: #6ee7b7;
+    --ui-accent: #10b981;
+    --ui-accent-hover: #34d399;
+    --ui-accent-soft: rgba(251, 191, 36, 0.16);
+    --ui-accent-text: #fde68a;
+    --ui-accent-btn-text: #022c22;
+  }
+
   html, body, #root {
     height: 100%;
     width: 100%;

@@ -42,6 +42,7 @@ import { APP_VERSION } from '../../version';
 interface ProjectManagerModalProps {
   currentProject: WhiteboardProject;
   onSelectProject: (project: WhiteboardProject) => void;
+  onBeforeSwitchProject?: () => Promise<void>;
   onRequestNewProject?: (folderId: string) => void;
   onNotifyToast?: (message: string, kind?: 'info' | 'error') => void;
   onClose: () => void;
@@ -50,6 +51,7 @@ interface ProjectManagerModalProps {
 export const ProjectManagerModal: React.FC<ProjectManagerModalProps> = ({
   currentProject,
   onSelectProject,
+  onBeforeSwitchProject,
   onRequestNewProject,
   onNotifyToast,
   onClose,
@@ -102,6 +104,7 @@ export const ProjectManagerModal: React.FC<ProjectManagerModalProps> = ({
 
   const handleCreateProject = async () => {
     const targetFolder = selectedFolder === 'all' ? 'general' : selectedFolder;
+    await onBeforeSwitchProject?.();
     if (onRequestNewProject) {
       onClose();
       onRequestNewProject(targetFolder);
@@ -114,6 +117,7 @@ export const ProjectManagerModal: React.FC<ProjectManagerModalProps> = ({
   };
 
   const handleOpenProject = async (id: string) => {
+    await onBeforeSwitchProject?.();
     const loaded = await loadProject(id);
     if (loaded) {
       onSelectProject(loaded);
@@ -207,6 +211,7 @@ export const ProjectManagerModal: React.FC<ProjectManagerModalProps> = ({
       const text = await file.text();
       const parsed = JSON.parse(text) as WhiteboardProject;
       if (parsed && Array.isArray(parsed.boards)) {
+        await onBeforeSwitchProject?.();
         const imported: WhiteboardProject = {
           ...parsed,
           id: uid('proj'),

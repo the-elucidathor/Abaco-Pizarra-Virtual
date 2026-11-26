@@ -28,7 +28,7 @@ export const CANVAS_BG_SUGGESTED_COLORS: CanvasBgPresetOption[] = [
 
 // Indica si el tema de interfaz elegido utiliza superficie oscura
 export function isDarkThemePreset(theme: ThemePreset): boolean {
-  return theme === 'dark' || theme === 'blueprint' || theme === 'neon';
+  return theme === 'dark' || theme === 'blueprint' || theme === 'neon' || theme === 'aurora';
 }
 
 // Paleta visual base del tablero según el tema de interfaz
@@ -116,6 +116,18 @@ export function getThemeBoardColors(theme: ThemePreset): BoardThemeColors {
         axisStroke: 'rgba(34, 211, 238, 0.76)',
         axisText: '#67E8F9',
         defaultInk: '#67E8F9',
+        isDarkSurface: true,
+      };
+    case 'aurora':
+      return {
+        boardBg: '#061613',
+        surroundingBg: '#030A08',
+        gridStroke: 'rgba(52, 211, 153, 0.17)',
+        linedStroke: 'rgba(251, 191, 36, 0.18)',
+        dotFill: 'rgba(52, 211, 153, 0.36)',
+        axisStroke: 'rgba(251, 191, 36, 0.74)',
+        axisText: '#FDE68A',
+        defaultInk: '#A7F3D0',
         isDarkSurface: true,
       };
     case 'light':
@@ -311,6 +323,7 @@ const KNOWN_AUTO_INKS = new Set([
   '#e6f4ff',
   '#3b2416',
   '#67e8f9',
+  '#a7f3d0',
   '#ffffff',
   '#000000',
 ]);
@@ -445,7 +458,7 @@ export interface TrackingVisualPalette {
   badgeText: string;
 }
 
-// Calcula colores de alto contraste para líneas de rastreo y etiquetas en los 8 temas y 5 colores de lienzo
+// Calcula colores de alto contraste para líneas de rastreo y etiquetas en los 9 temas y 5 colores de lienzo
 export function getTrackingVisualPalette(boardTheme: BoardThemeColors): TrackingVisualPalette {
   const bgHex = parseHexRgb(boardTheme.boardBg) ? boardTheme.boardBg : '#ffffff';
   const candidates = boardTheme.isDarkSurface
