@@ -765,18 +765,22 @@ export function buildUserManualPdf(options?: BuildUserManualOptions): jsPDF {
   b.drawCoverAndReserveToc();
 
   // =========================================================================
-  // NOVEDADES DE LA VERSIÓN 1.11.4
+  // NOVEDADES DE LA VERSIÓN 1.11.6
   // =========================================================================
   b.addPage();
   b.drawSectionTitle(
     APP_VERSION,
     `Novedades de la versión ${APP_VERSION}`,
-    'Agrupación geométrica real, ecuaciones en vivo dentro del texto, editor transparente y ejecución sin internet.'
+    'Agrupación geométrica real, ecuaciones en vivo dentro del texto, actualización automática y modo sin internet.'
   );
   b.drawParagraph(
-    `La versión ${APP_VERSION} fortalece el trabajo nativo en PC sin conexión a internet y perfecciona la edición matemática, geométrica y de grupo:`
+    `La versión ${APP_VERSION} consolida la edición nativa en PC con actualizaciones automáticas opcionales desde GitHub Releases (cuando hay conexión) y mantiene las mejoras recientes:`
   );
   b.drawBullets([
+    {
+      lead: 'Actualizaciones automáticas en escritorio (v1.11.6)',
+      body: 'La aplicación nativa para Windows verifica nuevas versiones publicadas en GitHub, las descarga silenciosamente en segundo plano y avisa al usuario para reiniciar e instalarlas ahora o al cerrar (sin bloquear el trabajo sin internet).',
+    },
     {
       lead: 'Agrupación real y transformación conjunta (v1.11.4)',
       body: 'Al agrupar trazos, figuras, texto o ecuaciones (Ctrl+G), el bloque actúa como una sola unidad geométrica: al mover, escalar o rotar el grupo, todos los hijos se transforman de forma proporcional respecto al pivote del grupo.',
@@ -796,10 +800,6 @@ export function buildUserManualPdf(options?: BuildUserManualOptions): jsPDF {
     {
       lead: 'Navegación con rueda y gestión multihoja (v1.11.2–1.11.3)',
       body: 'En formatos Carta, Oficio, Doble Carta, Media Carta y Personalizado puedes agregar, duplicar o eliminar hojas (hasta 30), desplazarte con la rueda (Ctrl + rueda para zoom) y configurar marco y márgenes en mm.',
-    },
-    {
-      lead: 'Tamaño de letra 8–96 px con decimales y resaltado del proyecto',
-      body: 'Escribe tamaños decimales exactos (como 11.5 o 13.5 px) en texto, notas y tablas; además, el título editable del proyecto en la barra superior resalta de acuerdo con el tema activo.',
     },
     {
       lead: 'Funcionamiento nativo en PC 100% sin internet',
