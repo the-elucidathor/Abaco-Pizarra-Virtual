@@ -55,7 +55,8 @@ const QUICK_COMMANDS: { id: CadCommandId; label: string; title: string }[] = [
   { id: 'circle', label: 'CIR', title: 'Círculo centro/radio/diámetro (CIR)' },
   { id: 'arc', label: 'ARC', title: 'Arco 3 puntos o centro-ángulo (ARC)' },
   { id: 'polygon', label: 'POL', title: 'Polígono N lados inscrito/circunscrito (POL)' },
-  { id: 'dim-linear', label: 'ACL', title: 'Acotación lineal (ACL)' },
+  { id: 'dim-linear', label: 'ACL', title: 'Acotación lineal H/V/Alineada (ACL)' },
+  { id: 'dim-aligned', label: 'ACA', title: 'Acotación alineada en dirección del elemento (ACA)' },
   { id: 'mirror', label: 'SIM', title: 'Simetría geométrica (SIM)' },
   { id: 'match-points', label: 'CP', title: 'Coincidencia de puntos (CP)' },
 ];
@@ -179,7 +180,7 @@ export const CadCommandBar: React.FC<CadCommandBarProps> = React.memo(({
             placeholder={
               isActive
                 ? 'X,Y · @dX,dY · @dist<áng'
-                : 'Comando (LIN, PL, REC, CIR, ARC, POL, ACL, SIM, MR)...'
+                : 'Comando (LIN, PL, REC, CIR, ARC, POL, ACL, ACA, SIM, MR)...'
             }
             aria-label="Barra de comandos de dibujo técnico"
             className="w-full h-6 px-2 rounded border theme-border theme-surface-alt font-mono-tabular text-[11px] outline-none focus:ring-1 focus:ring-blue-500"

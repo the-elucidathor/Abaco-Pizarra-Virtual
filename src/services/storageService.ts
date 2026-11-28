@@ -1,5 +1,6 @@
 import type {
   AppSettings,
+  CustomThemeColors,
   FolderRecord,
   ProjectSnapshotMeta,
   ProjectSummary,
@@ -92,6 +93,21 @@ async function idbDelete(storeName: string, key: string): Promise<void> {
 // Clave de persistencia para las secciones abiertas en el acordeón de Configuración
 const SETTINGS_OPEN_SECTIONS_KEY = 'abaco_settings_open_sections_v1';
 
+// V1.11.8-5: Ranuras personalizables por defecto para la paleta rápida
+export const DEFAULT_CUSTOM_COLOR_SWATCHES: string[] = [
+  '#0f172a',
+  '#2563eb',
+  '#dc2626',
+  '#059669',
+];
+
+// V1.11.8-14: Valores por defecto para el tema "Personalizado"
+export const DEFAULT_CUSTOM_THEME_COLORS: CustomThemeColors = {
+  background: '#f8fafc',
+  accent: '#2563eb',
+  text: '#0f172a',
+};
+
 // Valores predeterminados de configuración general (incluye color del lienzo automático)
 export const defaultSettings: AppSettings = {
   theme: 'light',
@@ -107,6 +123,8 @@ export const defaultSettings: AppSettings = {
   spellcheckEnabled: true,
   spellcheckDefaultLang: 'es',
   wheelScrollSheets: true,
+  customColorSwatches: [...DEFAULT_CUSTOM_COLOR_SWATCHES],
+  customThemeColors: { ...DEFAULT_CUSTOM_THEME_COLORS },
 };
 
 const VALID_THEMES = new Set([
@@ -118,7 +136,7 @@ const VALID_THEMES = new Set([
   'blueprint',
   'sepia',
   'neon',
-  'aurora',
+  'custom',
 ]);
 
 const VALID_CANVAS_BG_MODES = new Set([
@@ -141,6 +159,7 @@ export function loadSettings(): AppSettings {
     if (!raw) return defaultSettings;
     const parsed = JSON.parse(raw);
     const merged = { ...defaultSettings, ...parsed };
+    // V1.11.8-14: Fallback silencioso al tema por defecto si estaba guardado 'aurora' u otro inválido
     if (!VALID_THEMES.has(merged.theme)) {
       merged.theme = 'light';
     }
@@ -151,6 +170,11 @@ export function loadSettings(): AppSettings {
       ? merged.canvasBgCustomColor.trim()
       : '#ffffff';
     merged.adaptStrokeColorsToCanvasBg = Boolean(merged.adaptStrokeColorsToCanvasBg);
+    // V1.11.8-15: Normaliza tamaño base de cuadrícula en rango [8, 100]
+    merged.defaultGridSize =
+      typeof merged.defaultGridSize === 'number' && Number.isFinite(merged.defaultGridSize)
+        ? Math.max(8, Math.min(100, Math.round(merged.defaultGridSize)))
+        : 28;
     merged.cursorSize =
       typeof merged.cursorSize === 'number' && Number.isFinite(merged.cursorSize)
         ? Math.max(20, Math.min(48, Math.round(merged.cursorSize)))
@@ -168,6 +192,27 @@ export function loadSettings(): AppSettings {
         : 'es';
     merged.wheelScrollSheets =
       typeof merged.wheelScrollSheets === 'boolean' ? merged.wheelScrollSheets : true;
+    // V1.11.8-5: Normaliza exactamente 4 ranuras de color personalizadas válidas
+    const rawCustom = Array.isArray(parsed.customColorSwatches) ? parsed.customColorSwatches : [];
+    merged.customColorSwatches = DEFAULT_CUSTOM_COLOR_SWATCHES.map((fallback, idx) =>
+      isValidHex6(rawCustom[idx]) ? rawCustom[idx].trim().toLowerCase() : fallback
+    );
+    // V1.11.8-14: Normaliza los 3 colores del tema Personalizado
+    const rawCustomTheme =
+      parsed.customThemeColors && typeof parsed.customThemeColors === 'object'
+        ? (parsed.customThemeColors as Partial<CustomThemeColors>)
+        : {};
+    merged.customThemeColors = {
+      background: isValidHex6(rawCustomTheme.background)
+        ? rawCustomTheme.background.trim().toLowerCase()
+        : DEFAULT_CUSTOM_THEME_COLORS.background,
+      accent: isValidHex6(rawCustomTheme.accent)
+        ? rawCustomTheme.accent.trim().toLowerCase()
+        : DEFAULT_CUSTOM_THEME_COLORS.accent,
+      text: isValidHex6(rawCustomTheme.text)
+        ? rawCustomTheme.text.trim().toLowerCase()
+        : DEFAULT_CUSTOM_THEME_COLORS.text,
+    };
     return merged;
   } catch {
     return defaultSettings;

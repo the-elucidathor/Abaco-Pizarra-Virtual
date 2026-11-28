@@ -28,6 +28,7 @@ import {
   createDimensionAnchor,
   extractCircleRadiusAtPoint,
   recomputeAssociativeDimensions,
+  resolveLinearAxisMode,
 } from './cadDimensions';
 import { expandSelectionToGroups, ensureGroupsArray } from './cadGroups';
 import { findObjectNearWorldPoint } from './cadSnap';
@@ -321,11 +322,12 @@ export function getCadPromptInfo(
       }
       return {
         commandLabel: 'ACL',
-        prompt: 'Especifique la posición de la línea de cota o elija eje:',
+        prompt: 'Especifique la posición de la línea de cota (Auto detecta H, V o Alineada) o elija eje:',
         options: [
           { code: 'A', label: 'Auto (A)', active: session.linearDimAxis === 'auto' },
           { code: 'H', label: 'Horizontal (H)', active: session.linearDimAxis === 'horizontal' },
           { code: 'V', label: 'Vertical (V)', active: session.linearDimAxis === 'vertical' },
+          { code: 'D', label: 'Alineada (D)', active: session.linearDimAxis === 'aligned' },
         ],
         hasBasePoint: true,
         baseWorld,
@@ -941,13 +943,19 @@ export function applyCadPointPick(
     }
     const [p1, p2] = session.points;
     const [id1, id2] = session.pickedObjectIds;
+    const resolvedAxis =
+      cmd === 'dim-linear'
+        ? resolveLinearAxisMode(p1, p2, pickedWorld, session.linearDimAxis)
+        : 'aligned';
+    const finalDimKind =
+      cmd === 'dim-aligned' || resolvedAxis === 'aligned' ? 'aligned' : 'linear';
     const dimObj = buildDimensionObject(
       {
-        dimKind: cmd === 'dim-linear' ? 'linear' : 'aligned',
+        dimKind: finalDimKind,
         p1,
         p2,
         offsetPt: pickedWorld,
-        linearAxis: cmd === 'dim-linear' ? session.linearDimAxis : undefined,
+        linearAxis: finalDimKind === 'linear' ? session.linearDimAxis : undefined,
         anchor1: createDimensionAnchor(id1, p1, objects, 'point'),
         anchor2: createDimensionAnchor(id2, p2, objects, 'point'),
       },
@@ -964,7 +972,8 @@ export function applyCadPointPick(
         step: 0,
         points: [],
         pickedObjectIds: [],
-        statusMessage: cmd === 'dim-linear' ? 'Cota lineal creada' : 'Cota alineada creada',
+        statusMessage:
+          finalDimKind === 'aligned' ? 'Cota alineada creada' : 'Cota lineal creada',
       },
     };
   }
@@ -1802,11 +1811,19 @@ export function executeCadCommandText(
 
     // Dimension linear / ordinate axis options
     if (session.activeCommand === 'dim-linear') {
-      if (key === 'H' || key === 'V' || key === 'A') {
+      if (key === 'H' || key === 'V' || key === 'A' || key === 'D') {
+        const nextAxis: CadSessionState['linearDimAxis'] =
+          key === 'H'
+            ? 'horizontal'
+            : key === 'V'
+            ? 'vertical'
+            : key === 'A'
+            ? 'auto'
+            : 'aligned';
         return {
           nextSession: {
             ...session,
-            linearDimAxis: key === 'H' ? 'horizontal' : key === 'V' ? 'vertical' : 'auto',
+            linearDimAxis: nextAxis,
             statusMessage: null,
           },
         };

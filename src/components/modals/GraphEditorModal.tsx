@@ -10,6 +10,7 @@ import type {
 // OPT: 1.1 — Suscripción a carga diferida de mathjs
 import { compileFunctionItem, useMathEngineReady } from '../../utils/mathEngine';
 import { uid } from '../../utils/id';
+import { ColorSwatchPicker } from '../ColorSwatchPicker';
 
 interface GraphEditorModalProps {
   initialGraph?: GraphObject | null;
@@ -239,15 +240,17 @@ export const GraphEditorModal: React.FC<GraphEditorModalProps> = ({
               />
               <span>Detectar intersecciones</span>
             </label>
-            <label className="flex items-center gap-2 ml-auto">
+            <div className="flex items-center gap-2 ml-auto">
               <span className="text-slate-600 dark:text-slate-400">Fondo:</span>
-              <input
-                type="color"
-                value={backgroundColor === 'transparent' ? '#ffffff' : backgroundColor}
-                onChange={(e) => setBackgroundColor(e.target.value)}
-                className="w-6 h-6 rounded border border-slate-300 cursor-pointer"
+              <ColorSwatchPicker
+                compact
+                allowTransparent
+                value={backgroundColor}
+                onPreviewColor={(c) => setBackgroundColor(c)}
+                onCommitColor={(c) => setBackgroundColor(c)}
+                title="Color de fondo de la gráfica"
               />
-            </label>
+            </div>
           </div>
 
           {/* Functions */}
@@ -286,17 +289,20 @@ export const GraphEditorModal: React.FC<GraphEditorModalProps> = ({
                       }
                       className="flex-1 min-w-[160px] rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 px-2.5 py-1 text-xs font-mono-tabular"
                     />
-                    <input
-                      type="color"
+                    <ColorSwatchPicker
+                      compact
                       value={fn.color}
-                      onChange={(e) =>
+                      onPreviewColor={(c) =>
                         setFunctions((prev) =>
-                          prev.map((item) =>
-                            item.id === fn.id ? { ...item, color: e.target.value } : item
-                          )
+                          prev.map((item) => (item.id === fn.id ? { ...item, color: c } : item))
                         )
                       }
-                      className="w-7 h-7 rounded border border-slate-300 cursor-pointer"
+                      onCommitColor={(c) =>
+                        setFunctions((prev) =>
+                          prev.map((item) => (item.id === fn.id ? { ...item, color: c } : item))
+                        )
+                      }
+                      title="Color de función"
                     />
                     <select
                       value={fn.strokeStyle}
@@ -402,15 +408,20 @@ export const GraphEditorModal: React.FC<GraphEditorModalProps> = ({
                       }
                       className="w-16 rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 px-1.5 py-1 font-mono-tabular"
                     />
-                    <input
-                      type="color"
+                    <ColorSwatchPicker
+                      compact
                       value={pt.color}
-                      onChange={(e) =>
+                      onPreviewColor={(c) =>
                         setPoints((prev) =>
-                          prev.map((p) => (p.id === pt.id ? { ...p, color: e.target.value } : p))
+                          prev.map((p) => (p.id === pt.id ? { ...p, color: c } : p))
                         )
                       }
-                      className="w-6 h-6 rounded border border-slate-300"
+                      onCommitColor={(c) =>
+                        setPoints((prev) =>
+                          prev.map((p) => (p.id === pt.id ? { ...p, color: c } : p))
+                        )
+                      }
+                      title="Color de punto"
                     />
                     <button
                       type="button"
@@ -513,17 +524,20 @@ export const GraphEditorModal: React.FC<GraphEditorModalProps> = ({
                       className="w-12 rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 px-1 py-1 font-mono-tabular"
                       title="y2"
                     />
-                    <input
-                      type="color"
+                    <ColorSwatchPicker
+                      compact
                       value={v.color}
-                      onChange={(e) =>
+                      onPreviewColor={(c) =>
                         setVectors((prev) =>
-                          prev.map((item) =>
-                            item.id === v.id ? { ...item, color: e.target.value } : item
-                          )
+                          prev.map((item) => (item.id === v.id ? { ...item, color: c } : item))
                         )
                       }
-                      className="w-6 h-6 rounded border border-slate-300"
+                      onCommitColor={(c) =>
+                        setVectors((prev) =>
+                          prev.map((item) => (item.id === v.id ? { ...item, color: c } : item))
+                        )
+                      }
+                      title="Color de vector"
                     />
                     <button
                       type="button"

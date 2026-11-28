@@ -1,4 +1,8 @@
-import type { CanvasBackgroundColorMode, ThemePreset } from '../types/whiteboard';
+import type {
+  CanvasBackgroundColorMode,
+  CustomThemeColors,
+  ThemePreset,
+} from '../types/whiteboard';
 
 export interface BoardThemeColors {
   boardBg: string;
@@ -10,6 +14,227 @@ export interface BoardThemeColors {
   axisText: string;
   defaultInk: string;
   isDarkSurface: boolean;
+}
+
+// V1.11.8-14: Tokens CSS y metadatos de accesibilidad derivados para el tema "Personalizado"
+export interface DerivedCustomThemeTokens {
+  cssVars: {
+    '--ui-bg': string;
+    '--ui-surface': string;
+    '--ui-surface-alt': string;
+    '--ui-border': string;
+    '--ui-text': string;
+    '--ui-text-muted': string;
+    '--ui-accent': string;
+    '--ui-accent-hover': string;
+    '--ui-accent-soft': string;
+    '--ui-accent-text': string;
+    '--ui-accent-btn-text': string;
+  };
+  isDarkSurface: boolean;
+  inputContrastRatio: number;
+  finalContrastRatio: number;
+  textAdjusted: boolean;
+  accentTextAdjusted: boolean;
+  effectiveColors: CustomThemeColors;
+}
+
+const CUSTOM_THEME_FALLBACK: CustomThemeColors = {
+  background: '#f8fafc',
+  accent: '#2563eb',
+  text: '#0f172a',
+};
+
+function normalizeHex6OrFallback(value: unknown, fallback: string): string {
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    const rgb = parseHexRgb(trimmed);
+    if (rgb) {
+      return rgbToHex(rgb.r, rgb.g, rgb.b);
+    }
+  }
+  return fallback;
+}
+
+function mixHexColors(hexA: string, hexB: string, weightB: number): string {
+  const a = parseHexRgb(hexA);
+  const b = parseHexRgb(hexB);
+  if (!a || !b) return hexA;
+  const t = Math.max(0, Math.min(1, weightB));
+  return rgbToHex(
+    a.r + (b.r - a.r) * t,
+    a.g + (b.g - a.g) * t,
+    a.b + (b.b - a.b) * t
+  );
+}
+
+// V1.11.8-14: Garantiza contraste mínimo WCAG entre un color candidato y una o más superficies
+function ensureContrastAgainstSurfaces(
+  candidateHex: string,
+  surfaces: string[],
+  minRatio: number,
+  preferLight: boolean
+): { hex: string; adjusted: boolean } {
+  const minContrast = (fg: string) => {
+    let worst = 21;
+    for (const s of surfaces) {
+      const r = getHexContrastRatio(fg, s);
+      if (r !== null && r < worst) worst = r;
+    }
+    return worst;
+  };
+
+  if (minContrast(candidateHex) >= minRatio) {
+    return { hex: candidateHex, adjusted: false };
+  }
+
+  const parsed = parseHexRgb(candidateHex);
+  if (parsed) {
+    const hsl = rgbToHsl(parsed.r, parsed.g, parsed.b);
+    const dir = preferLight ? 1 : -1;
+    // Primero explora ajustes incrementales de luminosidad preservando el matiz elegido
+    for (let step = 1; step <= 24; step += 1) {
+      const nextL = Math.max(0.02, Math.min(0.98, hsl.l + dir * step * 0.04));
+      const candRgb = hslToRgb(hsl.h, hsl.s, nextL);
+      const candHex = rgbToHex(candRgb.r, candRgb.g, candRgb.b);
+      if (minContrast(candHex) >= minRatio) {
+        return { hex: candHex, adjusted: true };
+      }
+    }
+    // También prueba dirección opuesta por si la luminosidad estaba cerca del extremo contrario
+    for (let step = 1; step <= 24; step += 1) {
+      const nextL = Math.max(0.02, Math.min(0.98, hsl.l - dir * step * 0.04));
+      const candRgb = hslToRgb(hsl.h, hsl.s, nextL);
+      const candHex = rgbToHex(candRgb.r, candRgb.g, candRgb.b);
+      if (minContrast(candHex) >= minRatio) {
+        return { hex: candHex, adjusted: true };
+      }
+    }
+  }
+
+  // Respaldo de máximo contraste blanco/oscuro
+  const lightFallback = '#f8fafc';
+  const darkFallback = '#0f172a';
+  const lightRatio = minContrast(lightFallback);
+  const darkRatio = minContrast(darkFallback);
+  if (lightRatio >= darkRatio) {
+    return { hex: lightRatio >= minRatio ? lightFallback : '#ffffff', adjusted: true };
+  }
+  return { hex: darkRatio >= minRatio ? darkFallback : '#020617', adjusted: true };
+}
+
+const customThemeTokensCache = new Map<string, DerivedCustomThemeTokens>();
+
+// V1.11.8-14: Deriva todas las variables CSS de interfaz desde Fondo, Acento y Texto con validación WCAG
+export function deriveCustomThemeTokens(
+  colors?: Partial<CustomThemeColors>
+): DerivedCustomThemeTokens {
+  const bg = normalizeHex6OrFallback(colors?.background, CUSTOM_THEME_FALLBACK.background);
+  const accent = normalizeHex6OrFallback(colors?.accent, CUSTOM_THEME_FALLBACK.accent);
+  const rawText = normalizeHex6OrFallback(colors?.text, CUSTOM_THEME_FALLBACK.text);
+
+  const cacheKey = `${bg}|${accent}|${rawText}`;
+  const cached = customThemeTokensCache.get(cacheKey);
+  if (cached) {
+    return cached;
+  }
+
+  const bgLum = getHexRelativeLuminance(bg) ?? 0.95;
+  const isDarkSurface = bgLum < 0.179;
+
+  // Superficies elevadas, alternativas y bordes sutiles adaptados a claridad/oscuridad del fondo
+  const surface = isDarkSurface
+    ? mixHexColors(bg, '#ffffff', 0.06)
+    : bgLum > 0.92
+    ? '#ffffff'
+    : mixHexColors(bg, '#ffffff', 0.35);
+  const surfaceAlt = isDarkSurface
+    ? mixHexColors(bg, '#ffffff', 0.11)
+    : mixHexColors(bg, '#0f172a', 0.055);
+  const rawBorder = isDarkSurface
+    ? mixHexColors(bg, '#ffffff', 0.2)
+    : mixHexColors(bg, '#0f172a', 0.16);
+  const border = mixHexColors(rawBorder, accent, 0.08);
+
+  const inputContrastRatio = getHexContrastRatio(rawText, bg) ?? 1;
+
+  // Valida que el texto alcance WCAG AA (>= 4.5) sobre fondo base y paneles elevados
+  const validatedText = ensureContrastAgainstSurfaces(
+    rawText,
+    [bg, surface, surfaceAlt],
+    4.5,
+    isDarkSurface
+  );
+  const text = validatedText.hex;
+  const finalContrastRatio = getHexContrastRatio(text, bg) ?? inputContrastRatio;
+
+  // Texto secundario con contraste >= 3.2 sobre las superficies
+  const mutedMix = mixHexColors(text, bg, 0.36);
+  const validatedMuted = ensureContrastAgainstSurfaces(
+    mutedMix,
+    [bg, surface],
+    3.2,
+    isDarkSurface
+  );
+
+  // Estado hover del acento y versión suave translúcida
+  const accentRgb = parseHexRgb(accent) ?? { r: 37, g: 99, b: 235 };
+  const accentLum = getHexRelativeLuminance(accent) ?? 0.2;
+  const accentHover =
+    accentLum > 0.35
+      ? mixHexColors(accent, '#020617', 0.18)
+      : mixHexColors(accent, '#ffffff', 0.16);
+  const accentSoft = `rgba(${accentRgb.r}, ${accentRgb.g}, ${accentRgb.b}, ${
+    isDarkSurface ? 0.24 : 0.14
+  })`;
+
+  // Texto sobre botón de acento (elige blanco u oscuro según mayor contraste WCAG)
+  const whiteContrast = getHexContrastRatio('#ffffff', accent) ?? 1;
+  const darkContrast = getHexContrastRatio('#0f172a', accent) ?? 1;
+  const accentBtnText = whiteContrast >= darkContrast ? '#ffffff' : '#0f172a';
+
+  // Texto de énfasis en acento sobre fondo/panel (AA >= 4.5)
+  const validatedAccentText = ensureContrastAgainstSurfaces(
+    accent,
+    [bg, surface],
+    4.5,
+    isDarkSurface
+  );
+
+  const result: DerivedCustomThemeTokens = {
+    cssVars: {
+      '--ui-bg': bg,
+      '--ui-surface': surface,
+      '--ui-surface-alt': surfaceAlt,
+      '--ui-border': border,
+      '--ui-text': text,
+      '--ui-text-muted': validatedMuted.hex,
+      '--ui-accent': accent,
+      '--ui-accent-hover': accentHover,
+      '--ui-accent-soft': accentSoft,
+      '--ui-accent-text': validatedAccentText.hex,
+      '--ui-accent-btn-text': accentBtnText,
+    },
+    isDarkSurface,
+    inputContrastRatio,
+    finalContrastRatio,
+    textAdjusted: validatedText.adjusted,
+    accentTextAdjusted: validatedAccentText.adjusted,
+    effectiveColors: {
+      background: bg,
+      accent,
+      text,
+    },
+  };
+
+  if (customThemeTokensCache.size >= 24) {
+    const oldestKey = customThemeTokensCache.keys().next().value;
+    if (oldestKey !== undefined) {
+      customThemeTokensCache.delete(oldestKey);
+    }
+  }
+  customThemeTokensCache.set(cacheKey, result);
+  return result;
 }
 
 // Opciones preestablecidas para el selector "Color del lienzo" (exactamente los 4 colores sugeridos)
@@ -26,13 +251,27 @@ export const CANVAS_BG_SUGGESTED_COLORS: CanvasBgPresetOption[] = [
   { id: 'cream', name: 'Crema', hex: '#F5EFE0' },
 ];
 
-// Indica si el tema de interfaz elegido utiliza superficie oscura
-export function isDarkThemePreset(theme: ThemePreset): boolean {
-  return theme === 'dark' || theme === 'blueprint' || theme === 'neon' || theme === 'aurora';
+// V1.11.8-14: Indica si el tema de interfaz elegido utiliza superficie oscura (incluye tema Personalizado dinámico)
+export function isDarkThemePreset(
+  theme: ThemePreset,
+  customThemeColors?: CustomThemeColors
+): boolean {
+  if (theme === 'custom') {
+    const bg = normalizeHex6OrFallback(
+      customThemeColors?.background,
+      CUSTOM_THEME_FALLBACK.background
+    );
+    const lum = getHexRelativeLuminance(bg);
+    return lum !== null ? lum < 0.179 : false;
+  }
+  return theme === 'dark' || theme === 'blueprint' || theme === 'neon';
 }
 
 // Paleta visual base del tablero según el tema de interfaz
-export function getThemeBoardColors(theme: ThemePreset): BoardThemeColors {
+export function getThemeBoardColors(
+  theme: ThemePreset,
+  customThemeColors?: CustomThemeColors
+): BoardThemeColors {
   switch (theme) {
     case 'dark':
       return {
@@ -118,18 +357,35 @@ export function getThemeBoardColors(theme: ThemePreset): BoardThemeColors {
         defaultInk: '#67E8F9',
         isDarkSurface: true,
       };
-    case 'aurora':
+    case 'custom': {
+      // V1.11.8-14: Paleta de lienzo derivada del tema Personalizado con validación WCAG
+      const derived = deriveCustomThemeTokens(customThemeColors);
+      const { cssVars, isDarkSurface } = derived;
+      const accentRgb = parseHexRgb(cssVars['--ui-accent']) ?? { r: 37, g: 99, b: 235 };
+      const textRgb = parseHexRgb(cssVars['--ui-text']) ?? { r: 15, g: 23, b: 42 };
+      const surroundingBg = isDarkSurface
+        ? mixHexColors(cssVars['--ui-bg'], '#000000', 0.32)
+        : mixHexColors(cssVars['--ui-bg'], '#0f172a', 0.11);
       return {
-        boardBg: '#061613',
-        surroundingBg: '#030A08',
-        gridStroke: 'rgba(52, 211, 153, 0.17)',
-        linedStroke: 'rgba(251, 191, 36, 0.18)',
-        dotFill: 'rgba(52, 211, 153, 0.36)',
-        axisStroke: 'rgba(251, 191, 36, 0.74)',
-        axisText: '#FDE68A',
-        defaultInk: '#A7F3D0',
-        isDarkSurface: true,
+        boardBg: cssVars['--ui-bg'],
+        surroundingBg,
+        gridStroke: `rgba(${textRgb.r}, ${textRgb.g}, ${textRgb.b}, ${
+          isDarkSurface ? 0.14 : 0.12
+        })`,
+        linedStroke: `rgba(${accentRgb.r}, ${accentRgb.g}, ${accentRgb.b}, ${
+          isDarkSurface ? 0.24 : 0.2
+        })`,
+        dotFill: `rgba(${textRgb.r}, ${textRgb.g}, ${textRgb.b}, ${
+          isDarkSurface ? 0.34 : 0.28
+        })`,
+        axisStroke: `rgba(${textRgb.r}, ${textRgb.g}, ${textRgb.b}, ${
+          isDarkSurface ? 0.56 : 0.48
+        })`,
+        axisText: cssVars['--ui-text-muted'],
+        defaultInk: cssVars['--ui-text'],
+        isDarkSurface,
       };
+    }
     case 'light':
     default:
       return {
@@ -200,7 +456,8 @@ export function getHexContrastRatio(hexA: string, hexB: string): number | null {
 export function resolveCanvasBackgroundHex(
   mode: CanvasBackgroundColorMode,
   customColor: string,
-  fallbackTheme: ThemePreset
+  fallbackTheme: ThemePreset,
+  customThemeColors?: CustomThemeColors
 ): string {
   switch (mode) {
     case 'white':
@@ -215,7 +472,7 @@ export function resolveCanvasBackgroundHex(
       return parseHexRgb(customColor) ? customColor.trim() : '#FFFFFF';
     case 'auto':
     default:
-      return getThemeBoardColors(fallbackTheme).boardBg;
+      return getThemeBoardColors(fallbackTheme, customThemeColors).boardBg;
   }
 }
 
@@ -260,13 +517,19 @@ export function buildBoardColorsForCustomHex(
 export function getEffectiveBoardColors(
   theme: ThemePreset,
   canvasBgMode: CanvasBackgroundColorMode = 'auto',
-  canvasBgCustomColor = '#ffffff'
+  canvasBgCustomColor = '#ffffff',
+  customThemeColors?: CustomThemeColors
 ): BoardThemeColors {
-  const themeColors = getThemeBoardColors(theme);
+  const themeColors = getThemeBoardColors(theme, customThemeColors);
   if (canvasBgMode === 'auto') {
     return themeColors;
   }
-  const bgHex = resolveCanvasBackgroundHex(canvasBgMode, canvasBgCustomColor, theme);
+  const bgHex = resolveCanvasBackgroundHex(
+    canvasBgMode,
+    canvasBgCustomColor,
+    theme,
+    customThemeColors
+  );
   return buildBoardColorsForCustomHex(bgHex, themeColors.surroundingBg);
 }
 
@@ -313,8 +576,11 @@ export function getFrameBorderStroke(boardTheme: BoardThemeColors): string {
 }
 
 // Color de trazo predeterminado visible sobre el fondo de cada tema
-export function getThemeDefaultDrawColor(theme: ThemePreset): string {
-  return getThemeBoardColors(theme).defaultInk;
+export function getThemeDefaultDrawColor(
+  theme: ThemePreset,
+  customThemeColors?: CustomThemeColors
+): string {
+  return getThemeBoardColors(theme, customThemeColors).defaultInk;
 }
 
 const KNOWN_AUTO_INKS = new Set([
@@ -323,7 +589,6 @@ const KNOWN_AUTO_INKS = new Set([
   '#e6f4ff',
   '#3b2416',
   '#67e8f9',
-  '#a7f3d0',
   '#ffffff',
   '#000000',
 ]);
@@ -353,10 +618,11 @@ export function resolveAdaptiveDrawColorForBoardBg(
 export function resolveAdaptiveDrawColor(
   currentColor: string,
   prevTheme: ThemePreset,
-  nextTheme: ThemePreset
+  nextTheme: ThemePreset,
+  customThemeColors?: CustomThemeColors
 ): string {
-  const prevDefault = getThemeDefaultDrawColor(prevTheme);
-  const nextBoardColors = getThemeBoardColors(nextTheme);
+  const prevDefault = getThemeDefaultDrawColor(prevTheme, customThemeColors);
+  const nextBoardColors = getThemeBoardColors(nextTheme, customThemeColors);
   return resolveAdaptiveDrawColorForBoardBg(currentColor, prevDefault, nextBoardColors);
 }
 

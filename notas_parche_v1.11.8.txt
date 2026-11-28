@@ -1,0 +1,152 @@
+================================================================================
+ÁBACO PIZARRA VIRTUAL — NOTAS DEL PARCHE v1.11.8
+Fecha de compilación: 2026-11-27
+Versión de aplicación y esquema .pizarra: 1.11.8
+================================================================================
+
+RESUMEN EJECUTIVO
+-----------------
+La actualización v1.11.8 consolida mejoras clave de precisión, rendimiento,
+edición de texto y ecuaciones, personalización visual y usabilidad sobre el lienzo
+en las 3 fases de entrega:
+  - Fase 1 (V1.11.8-1 a V1.11.8-6): Portapapeles interno persistente de módulo,
+    tipografía opcional en cotas, tipografía Times New Roman y tamaño 12 por
+    defecto en nuevos textos, paleta rápida unificada de 18 + 4 colores,
+    consulta espacial en lazo de selección y optimizaciones de renderizado.
+  - Fase 2 (V1.11.8-7 a V1.11.8-13): Edición interactiva avanzada de ecuaciones
+    (arrastre libre, tamaño 12 por defecto, subselección KaTeX), vista previa de
+    color con requestAnimationFrame y una sola entrada en historial, pegado en
+    cursor, hitboxes ajustados al contorno real, guías de alineación mediante refs,
+    alineación consistente de listas y marco unificado limpio para agrupaciones.
+  - Fase 3 Final (V1.11.8-14 a V1.11.8-17 + Versión 1.11.8): Reemplazo de tema
+    "Aurora" por tema "Personalizado" dinámico con validación WCAG, cuadrícula
+    ajustable de 8 a 100 px sincronizada con SNAP y ejes en todos los patrones y
+    modos, redimensionamiento libre y compacto de tablas hasta 40 px y menú
+    contextual completo al hacer clic derecho sobre selección múltiple.
+
+--------------------------------------------------------------------------------
+1. PORTAPAPELES, COTAS Y VALORES POR DEFECTO DE TEXTO (V1.11.8-1 a V1.11.8-6)
+--------------------------------------------------------------------------------
+[CORREGIDO] (V1.11.8-1) Portapapeles interno desacoplado de navigator.clipboard:
+  Copiar y Cortar almacenan los objetos y su jerarquía de grupos en memoria
+  persistente de módulo sin invocar APIs bloqueadas del navegador.
+[NUEVO]     (V1.11.8-2) Tipografía opcional en cotas (DimensionObject) y
+  desplazamiento manual directo de la línea de cota en el lienzo manteniendo
+  compatibilidad retroactiva con cotas existentes.
+[MEJORA]    (V1.11.8-4) Los cuadros de texto nuevos inician con fuente
+  Times New Roman y tamaño 12 por defecto sin alterar textos existentes.
+[NUEVO]     (V1.11.8-5) Paleta rápida de 18 colores predefinidos + 4 ranuras
+  personalizables persistentes compartida entre texto enriquecido y ecuaciones.
+[MEJORA]    (V1.11.8-6) Lazo de selección optimizado con índice espacial uniforme
+  (incluyendo cotas dentro de su caja envolvente completa).
+
+--------------------------------------------------------------------------------
+2. ECUACIONES, EDICIÓN EN VIVO, GUÍAS Y AGRUPACIONES (V1.11.8-7 a V1.11.8-13)
+--------------------------------------------------------------------------------
+[MEJORA]    (V1.11.8-7) Ecuaciones nuevas con tamaño 12, grip de arrastre libre
+  incluso durante edición activa, scroll interno automático cuando crece el
+  contenido y subselección parcial en el editor de ecuaciones KaTeX.
+[MEJORA]    (V1.11.8-8) Vista previa de color en texto enriquecido y ecuaciones
+  sincronizada con requestAnimationFrame y registro de UNA sola entrada en el
+  historial de deshacer/rehacer al confirmar.
+[MEJORA]    (V1.11.8-9) Pegado centrado automáticamente en la posición del
+  puntero o clic contextual (con rastreo por ref sin re-renderizados por
+  movimiento del ratón) y respeto de límites en hojas fijas.
+[CORREGIDO] (V1.11.8-10) Hitboxes ajustados exactamente al trazo/contorno visible
+  de cada objeto para que clics en huecos interiores pasen al objeto inferior
+  o al lienzo.
+[NUEVO]     (V1.11.8-11) Guías temporales de alineación durante el arrastre de
+  textos, ecuaciones y agrupaciones actualizadas imperativamente por refs SVG.
+[CORREGIDO] (V1.11.8-12) Paridad visual exacta de prefijos de lista, tipografía
+  y tamaño entre el modo visor (RichTextViewer) y editor (RichTextEditor).
+[MEJORA]    (V1.11.8-13) Ocultamiento de recuadros punteados internos en
+  agrupaciones reales manteniendo visibles los recuadros punteados individuales
+  cuando múltiples elementos están seleccionados sin agrupar.
+
+--------------------------------------------------------------------------------
+3. TEMA "PERSONALIZADO" CON VALIDACIÓN WCAG (V1.11.8-14)
+--------------------------------------------------------------------------------
+[CAMBIO]    Eliminación del tema "Aurora": los ajustes locales existentes que
+  tuvieran guardado "aurora" realizan un fallback silencioso y automático al
+  tema claro por defecto sin errores ni interrupciones.
+[NUEVO]     Tema "Personalizado" ('custom') manteniendo intactos los 8 temas
+  preestablecidos restantes.
+[NUEVO]     Tres paletas discretas de 12 colores en "Configuración >
+  Personalización de apariencia" para elegir Fondo, Acento y Texto al instante
+  sin retardo, con botón "Restablecer valores por defecto".
+[MEJORA]    Derivación automática de superficies elevadas, paneles, bordes
+  sutiles, estados hover y contraste adaptativo del lienzo.
+[NUEVO]     Validación automática de legibilidad WCAG 2.1 AA (ratio >= 4.5 en
+  texto principal y acento textual; >= 3.2 en texto secundario), ajustando de
+  forma automática la luminosidad cuando el contraste resulta insuficiente y
+  mostrando el indicador de ratio en la ventana de configuración.
+[MEJORA]    Acotación en dirección del elemento (alineada): acceso rápido ACA en
+  la barra CAD, opción "Alineada (D)" y detección automática diagonal dentro de
+  ACL manteniendo los modos horizontal/vertical, y selector de eje/dirección en
+  el Inspector de Propiedades para alternar cotas existentes entre Automático,
+  Horizontal, Vertical y Alineada.
+
+--------------------------------------------------------------------------------
+4. TAMAÑO DE CUADRÍCULA AJUSTABLE EN TODOS LOS FONDOS (V1.11.8-15)
+--------------------------------------------------------------------------------
+[NUEVO]     Control dual en el Inspector de Propiedades para "Tamaño de
+  cuadrícula" con deslizador y campo numérico en px dentro del rango 8 px a
+  100 px (conservando 28 px por defecto).
+[CORREGIDO] Aplicación uniforme del tamaño de cuadrícula y normalización [8, 100]
+  en todos los patrones de fondo (Cuadriculado, Rayado, Punteado e Isométrico),
+  tanto en espacio infinito como en hojas de tamaño fijo y vista de impresión,
+  mejorando además la nitidez de puntos en cuadrículas densas (<= 12 px).
+[MEJORA]    Sincronización automática de las marcas de ejes de coordenadas y del
+  ajuste a cuadrícula (SNAP / cadSnap) con el tamaño configurado sin degradar el
+  rendimiento (patrones SVG vectoriales memoizados en O(1)).
+
+--------------------------------------------------------------------------------
+5. TAMAÑO LIBRE Y COMPACTO EN TABLAS (V1.11.8-16)
+--------------------------------------------------------------------------------
+[CORREGIDO] Eliminación del tope mínimo restrictivo (56 px por columna / 34 px
+  por fila) y de la auto-expansión automática al montar o redimensionar que
+  impedían encoger tablas en pizarras pequeñas o personalizadas.
+[NUEVO]     Redimensionamiento libre desde las asas del lienzo, manejadores de
+  grupo y campos Ancho/Alto del Inspector hasta dimensiones compactas (mínimo
+  exterior de 40 px o 8 px por fila/columna según corresponda) con reparto exacto
+  de píxeles enteros sin deriva.
+[MEJORA]    Escalado proporcional limpio del texto, márgenes de celda compactos
+  y recorte controlado (overflow-hidden) para evitar desbordamientos o
+  deformaciones del layout.
+[MEJORA]    Compatibilidad total con tablas en proyectos guardados (conservan
+  su tamaño exacto) y registro de UNA sola entrada en deshacer/rehacer tanto en
+  hojas fijas como en espacio infinito.
+
+--------------------------------------------------------------------------------
+6. MENÚ CONTEXTUAL EN SELECCIÓN MÚLTIPLE (V1.11.8-17)
+--------------------------------------------------------------------------------
+[CORREGIDO] El manejador de clic derecho (contextmenu) sobre cualquier objeto
+  seleccionado o sobre el área interior del recuadro azul de selección múltiple
+  (en elementos agrupados o sin agrupar) mantiene intacta la selección y
+  despliega el menú contextual flotante correctamente.
+[MEJORA]    Habilitación de acciones aplicables al conjunto seleccionado:
+  Agrupar/Desagrupar, Copiar, Duplicar, Cortar, Eliminar, Alinear, Distribuir,
+  Girar, Simetría, Matriz, operaciones geométricas compatibles, Cambiar
+  propiedades comunes, Cambiar color común (incluyendo corrección de color en
+  cotas), Cambiar grosor común y Bloquear/Desbloquear.
+[CAMBIO]    La acción "Acotar" se oculta automáticamente en selección múltiple
+  al aplicar únicamente sobre un único elemento.
+[MEJORA]    Garantía de registro de UNA sola entrada de historial por cada
+  operación ejecutada desde el menú contextual.
+
+--------------------------------------------------------------------------------
+7. VERSIÓN Y COMPATIBILIDAD
+--------------------------------------------------------------------------------
+[CAMBIO]    Actualización oficial de la versión a 1.11.8 en package.json,
+  src/version.ts, server.ts, interfaz de usuario y metadatos de archivos
+  .pizarra exportados.
+
+--------------------------------------------------------------------------------
+PENDIENTE / NO APLICADO
+--------------------------------------------------------------------------------
+- Ningún requisito funcional de Fase 3 (V1.11.8-14 a V1.11.8-17) quedó
+  pendiente.
+- Pruebas interactivas manuales recomendadas en navegador/Electron tras la
+  compilación (verificación visual de contraste del tema Personalizado,
+  arrastre de tablas a 40 px y clic derecho dentro de selección múltiple vacía).
+================================================================================

@@ -1,4 +1,5 @@
-import type { ThemePreset } from '../types/whiteboard';
+import type { CustomThemeColors, ThemePreset } from '../types/whiteboard';
+import { deriveCustomThemeTokens, isDarkThemePreset } from './themePalette';
 
 export type CanvasCursorKind = 'default' | 'crosshair' | 'text' | 'grab' | 'grabbing' | 'eraser';
 
@@ -22,7 +23,8 @@ function getRelativeLuminance(hex: string): number | null {
 export function getThemeCursorPalette(
   theme: ThemePreset,
   customColor?: string,
-  boardIsDarkOverride?: boolean
+  boardIsDarkOverride?: boolean,
+  customThemeColors?: CustomThemeColors
 ): ThemeCursorPalette {
   if (customColor && customColor !== 'auto') {
     const lum = getRelativeLuminance(customColor);
@@ -37,8 +39,7 @@ export function getThemeCursorPalette(
 
   // Si el color del lienzo contradice el modo claro/oscuro del tema, prioriza legibilidad sobre el lienzo
   if (typeof boardIsDarkOverride === 'boolean') {
-    const themeIsDark =
-      theme === 'dark' || theme === 'blueprint' || theme === 'neon' || theme === 'aurora';
+    const themeIsDark = isDarkThemePreset(theme, customThemeColors);
     if (boardIsDarkOverride !== themeIsDark) {
       return boardIsDarkOverride
         ? {
@@ -85,13 +86,16 @@ export function getThemeCursorPalette(
         outer: '#d946ef',
         accent: '#f0abfc',
       };
-    case 'aurora':
+    case 'custom': {
+      // V1.11.8-14: Cursor con contraste derivado del tema Personalizado
+      const derived = deriveCustomThemeTokens(customThemeColors);
       return {
-        fill: '#fbbf24',
-        halo: '#061613',
-        outer: '#34d399',
-        accent: '#6ee7b7',
+        fill: derived.cssVars['--ui-accent'],
+        halo: derived.cssVars['--ui-bg'],
+        outer: derived.cssVars['--ui-text'],
+        accent: derived.cssVars['--ui-accent-text'],
       };
+    }
     case 'warm':
       return {
         fill: '#0f766e',
@@ -129,10 +133,11 @@ export function buildCursorSvg(
   kind: Exclude<CanvasCursorKind, 'eraser'>,
   size = 28,
   customColor = 'auto',
-  boardIsDarkOverride?: boolean
+  boardIsDarkOverride?: boolean,
+  customThemeColors?: CustomThemeColors
 ): { svg: string; hotX: number; hotY: number } {
   const s = Math.max(20, Math.min(48, Math.round(size)));
-  const p = getThemeCursorPalette(theme, customColor, boardIsDarkOverride);
+  const p = getThemeCursorPalette(theme, customColor, boardIsDarkOverride, customThemeColors);
   const scaleCoord = (v: number, base: number) => Math.round((v * s) / base);
 
   switch (kind) {
@@ -220,7 +225,8 @@ export function getContrastCanvasCursor(
   kind: CanvasCursorKind,
   size = 28,
   customColor = 'auto',
-  boardIsDarkOverride?: boolean
+  boardIsDarkOverride?: boolean,
+  customThemeColors?: CustomThemeColors
 ): string {
   if (kind === 'eraser') {
     return 'none';
@@ -230,7 +236,8 @@ export function getContrastCanvasCursor(
     kind,
     size,
     customColor,
-    boardIsDarkOverride
+    boardIsDarkOverride,
+    customThemeColors
   );
   const encoded = encodeURIComponent(svg.trim().replace(/\s+/g, ' '));
   return `url("data:image/svg+xml,${encoded}") ${hotX} ${hotY}, ${kind}`;

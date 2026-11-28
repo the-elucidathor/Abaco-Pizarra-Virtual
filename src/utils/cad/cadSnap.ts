@@ -553,7 +553,12 @@ export function resolverPunto(
   const shiftKey = Boolean(opciones.shiftKey);
   const gridSnapActivo = Boolean(config.gridSnap || opciones.gridSnapOverride);
   const stepCad = Math.max(0.01, config.snapStep || 10);
-  const stepWorld = Math.max(0.5, cadDistToWorldDist(stepCad, config));
+  // V1.11.8-15: Sincroniza el paso SNAP con boardGridStepWorld cuando se ajusta a la cuadrícula del tablero o en px
+  const stepWorld =
+    opciones.boardGridStepWorld !== undefined &&
+    (opciones.gridSnapOverride || config.unit === 'px')
+      ? Math.max(0.5, opciones.boardGridStepWorld)
+      : Math.max(0.5, cadDistToWorldDist(stepCad, config));
   const hyst = opciones.hysteresisState;
 
   // Alinea SNAP con cuadrícula visible cuando el paso coincide y existe marco activo
@@ -569,8 +574,22 @@ export function resolverPunto(
     alignToFrameGrid && opciones.gridOriginWorld
       ? {
           ...config,
+          unit:
+            opciones.gridSnapOverride && config.unit !== 'px'
+              ? 'px'
+              : config.unit,
+          snapStep:
+            stepMatchesGrid && opciones.boardGridStepWorld !== undefined && (opciones.gridSnapOverride || config.unit === 'px')
+              ? stepWorld
+              : config.snapStep,
           originX: opciones.gridOriginWorld.x,
           originY: opciones.gridOriginWorld.y,
+        }
+      : opciones.gridSnapOverride && opciones.boardGridStepWorld !== undefined
+      ? {
+          ...config,
+          unit: 'px',
+          snapStep: stepWorld,
         }
       : config;
 

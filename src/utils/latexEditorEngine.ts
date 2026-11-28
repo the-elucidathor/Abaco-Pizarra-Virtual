@@ -11,6 +11,30 @@ export interface MathCursor {
   offset: number;
 }
 
+// V1.11.8-7: Rango de subselección dentro de una misma secuencia del AST de ecuación
+export interface MathSelectionRange {
+  path: CursorStep[];
+  start: number;
+  end: number;
+}
+
+export const MATH_RELATIVE_SIZE_OPTIONS = [
+  { cmd: '\\tiny', label: 'Muy pequeño' },
+  { cmd: '\\scriptsize', label: 'Subíndice' },
+  { cmd: '\\footnotesize', label: 'Nota' },
+  { cmd: '\\small', label: 'Pequeño' },
+  { cmd: '\\normalsize', label: 'Normal' },
+  { cmd: '\\large', label: 'Grande' },
+  { cmd: '\\Large', label: 'Más grande' },
+  { cmd: '\\LARGE', label: 'Enorme' },
+  { cmd: '\\huge', label: 'Gigante' },
+  { cmd: '\\Huge', label: 'Máximo' },
+] as const;
+
+const MATH_RELATIVE_SIZE_SET = new Set<string>(
+  MATH_RELATIVE_SIZE_OPTIONS.map((o) => o.cmd)
+);
+
 export type MathNode =
   | { kind: 'char'; value: string }
   | { kind: 'cmd'; tex: string }
@@ -23,6 +47,7 @@ export type MathNode =
   | { kind: 'oversub'; cmd: string; a: MathNode[]; b: MathNode[] }
   | { kind: 'delim'; left: string; right: string; body: MathNode[] }
   | { kind: 'env'; env: string; rows: MathNode[][][] }
+  | { kind: 'styled'; styleKind: 'color' | 'size'; cmd: string; body: MathNode[] }
   | { kind: 'raw'; tex: string };
 
 const LARGE_OP_CMDS = new Set([
@@ -200,10 +225,11 @@ function readSingleNode(st: ParserState, stopOnRight = false): MathNode | null {
 
   if (ch === '{') {
     const inner = readBalanced(st, '{', '}');
+    const styledGroup = tryParseStyledGroup(inner);
+    if (styledGroup) return styledGroup;
     const seq = parseSequence(inner);
     if (seq.length === 0) return { kind: 'slot' };
     if (seq.length === 1) return seq[0];
-    // Return as raw group? Better: handled cleanly in parseSequence by flattening
     return { kind: 'raw', tex: `{${inner}}` };
   }
 
@@ -264,6 +290,23 @@ function readSingleNode(st: ParserState, stopOnRight = false): MathNode | null {
       }
       const rad = readArgSeq(st);
       return { kind: 'sqrt', deg, rad };
+    }
+
+    if (cmd === '\\textcolor') {
+      skipSpaces(st);
+      const colorRaw = st.src[st.pos] === '{' ? readBalanced(st, '{', '}') : '';
+      const safeColor = sanitizeMathColorToken(colorRaw) ?? '#0f172a';
+      const body = readArgSeq(st);
+      return { kind: 'styled', styleKind: 'color', cmd: safeColor, body };
+    }
+
+    if (MATH_RELATIVE_SIZE_SET.has(cmd)) {
+      skipSpaces(st);
+      if (st.src[st.pos] === '{') {
+        const body = readArgSeq(st);
+        return { kind: 'styled', styleKind: 'size', cmd, body };
+      }
+      return { kind: 'cmd', tex: cmd };
     }
 
     if (ACCENT_CMDS.has(cmd)) {
@@ -360,6 +403,51 @@ function trimMathSource(src: string): string {
   return leadTrimmed.slice(0, end);
 }
 
+// V1.11.8-7: Sanitiza tokens de color para \textcolor / \color evitando inyecciones
+function sanitizeMathColorToken(raw: string): string | null {
+  const t = raw.trim();
+  if (/^#[0-9a-fA-F]{6}$/.test(t)) return t.toLowerCase();
+  if (/^#[0-9a-fA-F]{3}$/.test(t)) {
+    return `#${t[1]}${t[1]}${t[2]}${t[2]}${t[3]}${t[3]}`.toLowerCase();
+  }
+  if (/^[a-zA-Z]{2,20}$/.test(t)) return t;
+  return null;
+}
+
+// V1.11.8-7: Reconoce grupos con estilo nativo KaTeX: {\large ...} o {\color{#hex} ...}
+function tryParseStyledGroup(inner: string): MathNode | null {
+  const trimmed = trimMathSource(inner);
+  if (!trimmed.startsWith('\\')) return null;
+  const st: ParserState = { src: trimmed, pos: 0 };
+  const cmd = readCommandName(st);
+  if (cmd === '\\color') {
+    skipSpaces(st);
+    const colorRaw = st.src[st.pos] === '{' ? readBalanced(st, '{', '}') : '';
+    const safeColor = sanitizeMathColorToken(colorRaw);
+    if (!safeColor) return null;
+    const rest = trimmed.slice(st.pos);
+    const body = parseSequence(rest);
+    return {
+      kind: 'styled',
+      styleKind: 'color',
+      cmd: safeColor,
+      body: body.length > 0 ? body : [{ kind: 'slot' }],
+    };
+  }
+  if (MATH_RELATIVE_SIZE_SET.has(cmd)) {
+    const rest = trimmed.slice(st.pos);
+    if (!rest.trim()) return null;
+    const body = parseSequence(rest);
+    return {
+      kind: 'styled',
+      styleKind: 'size',
+      cmd,
+      body: body.length > 0 ? body : [{ kind: 'slot' }],
+    };
+  }
+  return null;
+}
+
 function parseSequence(src: string): MathNode[] {
   const st: ParserState = { src: trimMathSource(src), pos: 0 };
   const result: MathNode[] = [];
@@ -368,6 +456,11 @@ function parseSequence(src: string): MathNode[] {
     if (st.pos >= st.src.length) break;
     if (st.src[st.pos] === '{') {
       const inner = readBalanced(st, '{', '}');
+      const styledGroup = tryParseStyledGroup(inner);
+      if (styledGroup) {
+        result.push(styledGroup);
+        continue;
+      }
       const innerNodes = parseSequence(inner);
       if (innerNodes.length === 0) {
         result.push({ kind: 'slot' });
@@ -467,6 +560,13 @@ function serializeNode(node: MathNode): string {
       const rowStrs = node.rows.map((r) => r.map((c) => serializeAstToLatex(c)).join(' & '));
       return `\\begin{${node.env}} ${rowStrs.join(' \\\\ ')} \\end{${node.env}}`;
     }
+    case 'styled': {
+      const bodyStr = serializeAstToLatex(node.body);
+      if (node.styleKind === 'color') {
+        return `\\textcolor{${node.cmd}}{${bodyStr}}`;
+      }
+      return `{${node.cmd} ${bodyStr}}`;
+    }
   }
 }
 
@@ -515,6 +615,8 @@ export function getChildSlots(node: MathNode): { slot: string; seq: MathNode[] }
       }
       return list;
     }
+    case 'styled':
+      return [{ slot: 'body', seq: node.body }];
     default:
       return [];
   }
@@ -561,17 +663,42 @@ export function decodePath(encoded: string): CursorStep[] {
   });
 }
 
+function pathEqual(a: CursorStep[], b: CursorStep[]): boolean {
+  return (
+    a.length === b.length &&
+    a.every((s, idx) => s.nodeIdx === b[idx].nodeIdx && s.slot === b[idx].slot)
+  );
+}
+
 function renderSeqForEditing(
   nodes: MathNode[],
   path: CursorStep[],
-  cursor: MathCursor
+  cursor: MathCursor,
+  selection?: MathSelectionRange | null
 ): string {
   const pathKey = encodePath(path);
-  const isActiveSeq =
-    path.length === cursor.path.length &&
-    path.every((s, idx) => s.nodeIdx === cursor.path[idx].nodeIdx && s.slot === cursor.path[idx].slot);
+  const isActiveSeq = pathEqual(path, cursor.path);
+  const hasSelInSeq =
+    Boolean(selection) &&
+    selection!.start !== selection!.end &&
+    pathEqual(path, selection!.path);
+  const selLo = hasSelInSeq ? Math.max(0, Math.min(selection!.start, selection!.end)) : -1;
+  const selHi = hasSelInSeq ? Math.min(nodes.length, Math.max(selection!.start, selection!.end)) : -1;
 
   const pieces: string[] = [];
+  const selectedPieces: string[] = [];
+
+  const pushPiece = (nodeIdx: number, texPiece: string) => {
+    if (hasSelInSeq && nodeIdx >= selLo && nodeIdx < selHi) {
+      selectedPieces.push(texPiece);
+      if (nodeIdx === selHi - 1) {
+        pieces.push(`\\htmlClass{eq-sel-range}{${selectedPieces.join(' ')}}`);
+        selectedPieces.length = 0;
+      }
+    } else {
+      pieces.push(texPiece);
+    }
+  };
 
   for (let i = 0; i <= nodes.length; i++) {
     if (isActiveSeq && cursor.offset === i) {
@@ -589,86 +716,101 @@ function renderSeqForEditing(
       if (node.kind === 'slot') {
         const isCurrentSlot = isActiveSeq && cursor.offset === i;
         if (isCurrentSlot) {
-          pieces.push(
+          pushPiece(
+            i,
             `\\htmlData{p=${pathKey},i=${i},s=1}{\\htmlClass{eq-active-slot}{\\square}}\\htmlClass{eq-caret-marker}{\\kern0pt}`
           );
         } else {
-          pieces.push(`\\htmlData{p=${pathKey},i=${i},s=1}{\\square}`);
+          pushPiece(i, `\\htmlData{p=${pathKey},i=${i},s=1}{\\square}`);
         }
       } else {
         const inner = serializeNode(node);
         if (node.kind === 'cmd' && LARGE_OP_CMDS.has(node.tex)) {
-          pieces.push(`\\mathop{\\htmlData{p=${pathKey},i=${i}}{${inner}}}`);
+          pushPiece(i, `\\mathop{\\htmlData{p=${pathKey},i=${i}}{${inner}}}`);
         } else {
-          pieces.push(`\\htmlData{p=${pathKey},i=${i}}{${inner}}`);
+          pushPiece(i, `\\htmlData{p=${pathKey},i=${i}}{${inner}}`);
         }
       }
     } else {
       switch (node.kind) {
         case 'frac': {
-          const numTex = renderSeqForEditing(node.num, [...path, { nodeIdx: i, slot: 'num' }], cursor);
-          const denTex = renderSeqForEditing(node.den, [...path, { nodeIdx: i, slot: 'den' }], cursor);
-          pieces.push(`\\frac{${numTex}}{${denTex}}`);
+          const numTex = renderSeqForEditing(node.num, [...path, { nodeIdx: i, slot: 'num' }], cursor, selection);
+          const denTex = renderSeqForEditing(node.den, [...path, { nodeIdx: i, slot: 'den' }], cursor, selection);
+          pushPiece(i, `\\frac{${numTex}}{${denTex}}`);
           break;
         }
         case 'binom': {
-          const topTex = renderSeqForEditing(node.top, [...path, { nodeIdx: i, slot: 'top' }], cursor);
-          const botTex = renderSeqForEditing(node.bot, [...path, { nodeIdx: i, slot: 'bot' }], cursor);
-          pieces.push(`\\binom{${topTex}}{${botTex}}`);
+          const topTex = renderSeqForEditing(node.top, [...path, { nodeIdx: i, slot: 'top' }], cursor, selection);
+          const botTex = renderSeqForEditing(node.bot, [...path, { nodeIdx: i, slot: 'bot' }], cursor, selection);
+          pushPiece(i, `\\binom{${topTex}}{${botTex}}`);
           break;
         }
         case 'sqrt': {
-          const radTex = renderSeqForEditing(node.rad, [...path, { nodeIdx: i, slot: 'rad' }], cursor);
+          const radTex = renderSeqForEditing(node.rad, [...path, { nodeIdx: i, slot: 'rad' }], cursor, selection);
           if (node.deg) {
-            const degTex = renderSeqForEditing(node.deg, [...path, { nodeIdx: i, slot: 'deg' }], cursor);
-            pieces.push(`\\sqrt[${degTex}]{${radTex}}`);
+            const degTex = renderSeqForEditing(node.deg, [...path, { nodeIdx: i, slot: 'deg' }], cursor, selection);
+            pushPiece(i, `\\sqrt[${degTex}]{${radTex}}`);
           } else {
-            pieces.push(`\\sqrt{${radTex}}`);
+            pushPiece(i, `\\sqrt{${radTex}}`);
           }
           break;
         }
         case 'supsub': {
           let s = '';
           if (node.sub) {
-            const subTex = renderSeqForEditing(node.sub, [...path, { nodeIdx: i, slot: 'sub' }], cursor);
+            const subTex = renderSeqForEditing(node.sub, [...path, { nodeIdx: i, slot: 'sub' }], cursor, selection);
             s += `_{${subTex}}`;
           }
           if (node.sup) {
-            const supTex = renderSeqForEditing(node.sup, [...path, { nodeIdx: i, slot: 'sup' }], cursor);
+            const supTex = renderSeqForEditing(node.sup, [...path, { nodeIdx: i, slot: 'sup' }], cursor, selection);
             s += `^{${supTex}}`;
           }
-          pieces.push(s);
+          pushPiece(i, s);
           break;
         }
         case 'accent': {
-          const bodyTex = renderSeqForEditing(node.body, [...path, { nodeIdx: i, slot: 'body' }], cursor);
-          pieces.push(`${node.cmd}{${bodyTex}}`);
+          const bodyTex = renderSeqForEditing(node.body, [...path, { nodeIdx: i, slot: 'body' }], cursor, selection);
+          pushPiece(i, `${node.cmd}{${bodyTex}}`);
           break;
         }
         case 'oversub': {
-          const aTex = renderSeqForEditing(node.a, [...path, { nodeIdx: i, slot: 'a' }], cursor);
-          const bTex = renderSeqForEditing(node.b, [...path, { nodeIdx: i, slot: 'b' }], cursor);
+          const aTex = renderSeqForEditing(node.a, [...path, { nodeIdx: i, slot: 'a' }], cursor, selection);
+          const bTex = renderSeqForEditing(node.b, [...path, { nodeIdx: i, slot: 'b' }], cursor, selection);
           if (node.cmd === '\\underbrace') {
-            pieces.push(`\\underbrace{${aTex}}_{${bTex}}`);
+            pushPiece(i, `\\underbrace{${aTex}}_{${bTex}}`);
           } else {
-            pieces.push(`${node.cmd}{${aTex}}{${bTex}}`);
+            pushPiece(i, `${node.cmd}{${aTex}}{${bTex}}`);
           }
           break;
         }
         case 'delim': {
-          const bodyTex = renderSeqForEditing(node.body, [...path, { nodeIdx: i, slot: 'body' }], cursor);
-          pieces.push(`\\left${node.left} ${bodyTex} \\right${node.right}`);
+          const bodyTex = renderSeqForEditing(node.body, [...path, { nodeIdx: i, slot: 'body' }], cursor, selection);
+          pushPiece(i, `\\left${node.left} ${bodyTex} \\right${node.right}`);
           break;
         }
         case 'env': {
           const rowStrs = node.rows.map((r, rIdx) =>
             r
               .map((c, cIdx) =>
-                renderSeqForEditing(c, [...path, { nodeIdx: i, slot: `${rIdx}.${cIdx}` }], cursor)
+                renderSeqForEditing(c, [...path, { nodeIdx: i, slot: `${rIdx}.${cIdx}` }], cursor, selection)
               )
               .join(' & ')
           );
-          pieces.push(`\\begin{${node.env}} ${rowStrs.join(' \\\\ ')} \\end{${node.env}}`);
+          pushPiece(i, `\\begin{${node.env}} ${rowStrs.join(' \\\\ ')} \\end{${node.env}}`);
+          break;
+        }
+        case 'styled': {
+          const bodyTex = renderSeqForEditing(
+            node.body,
+            [...path, { nodeIdx: i, slot: 'body' }],
+            cursor,
+            selection
+          );
+          if (node.styleKind === 'color') {
+            pushPiece(i, `\\textcolor{${node.cmd}}{${bodyTex}}`);
+          } else {
+            pushPiece(i, `{${node.cmd} ${bodyTex}}`);
+          }
           break;
         }
       }
@@ -691,11 +833,12 @@ function escapeEquationPlainHtml(str: string): string {
 export function renderInteractiveEquationHtml(
   latex: string,
   cursor: MathCursor,
-  displayMode = true
+  displayMode = true,
+  selection?: MathSelectionRange | null
 ): string {
   const ast = parseLatexToAst(latex);
   const clamped = clampCursor(ast, cursor);
-  const editTex = renderSeqForEditing(ast, [], clamped);
+  const editTex = renderSeqForEditing(ast, [], clamped, selection);
   try {
     const renderedEdit = renderKatexToStringLazy(editTex || '\\square', {
       displayMode,
@@ -1426,5 +1569,125 @@ export function applyDeleteAtCursor(
   return {
     latex: serializeAstToLatex(ast),
     cursor: { path: c.path, offset: seq[0]?.kind === 'slot' && seq.length === 1 ? 0 : Math.min(c.offset, seq.length) },
+  };
+}
+
+// V1.11.8-7: Aplica color (\textcolor) o tamaño relativo nativo KaTeX a una subselección sin habilitar trust: true
+export function applyStyleToLatexSelection(
+  latex: string,
+  cursor: MathCursor,
+  selection: MathSelectionRange | null | undefined,
+  patch: { color?: string; sizeCmd?: string }
+): { latex: string; cursor: MathCursor; selection: MathSelectionRange | null } {
+  const ast = parseLatexToAst(latex);
+  const c = clampCursor(ast, cursor);
+
+  const safeColor = patch.color ? sanitizeMathColorToken(patch.color) : null;
+  const safeSize =
+    patch.sizeCmd && MATH_RELATIVE_SIZE_SET.has(patch.sizeCmd) ? patch.sizeCmd : null;
+  if (!safeColor && !safeSize) {
+    return { latex, cursor: c, selection: selection ?? null };
+  }
+
+  const targetStyleKind: 'color' | 'size' = safeColor ? 'color' : 'size';
+  const targetCmd = (safeColor ?? safeSize)!;
+
+  if (selection && selection.start !== selection.end) {
+    const seq = getSeqAtPath(ast, selection.path);
+    if (seq && seq.length > 0) {
+      const lo = Math.max(0, Math.min(selection.start, selection.end));
+      const hi = Math.min(seq.length, Math.max(selection.start, selection.end));
+      if (hi > lo) {
+        const slice = seq.slice(lo, hi);
+        if (
+          slice.length === 1 &&
+          slice[0].kind === 'styled' &&
+          slice[0].styleKind === targetStyleKind
+        ) {
+          if (targetStyleKind === 'size' && targetCmd === '\\normalsize') {
+            const unwrapped = slice[0].body.length > 0 ? slice[0].body : [{ kind: 'slot' as const }];
+            seq.splice(lo, 1, ...unwrapped);
+            return {
+              latex: serializeAstToLatex(ast),
+              cursor: { path: selection.path, offset: lo + unwrapped.length },
+              selection: { path: selection.path, start: lo, end: lo + unwrapped.length },
+            };
+          }
+          slice[0].cmd = targetCmd;
+          return {
+            latex: serializeAstToLatex(ast),
+            cursor: { path: selection.path, offset: lo + 1 },
+            selection: { path: selection.path, start: lo, end: lo + 1 },
+          };
+        }
+
+        if (targetStyleKind === 'size' && targetCmd === '\\normalsize') {
+          return { latex, cursor: c, selection };
+        }
+
+        const wrapped: MathNode = {
+          kind: 'styled',
+          styleKind: targetStyleKind,
+          cmd: targetCmd,
+          body: slice,
+        };
+        seq.splice(lo, hi - lo, wrapped);
+        return {
+          latex: serializeAstToLatex(ast),
+          cursor: { path: selection.path, offset: lo + 1 },
+          selection: { path: selection.path, start: lo, end: lo + 1 },
+        };
+      }
+    }
+  }
+
+  // Sin rango activo: si el cursor ya está dentro de un nodo styled del mismo tipo, actualiza su comando
+  if (c.path.length > 0) {
+    const lastStep = c.path[c.path.length - 1];
+    const parentSeq = getSeqAtPath(ast, c.path.slice(0, -1));
+    const parentNode = parentSeq?.[lastStep.nodeIdx];
+    if (parentNode && parentNode.kind === 'styled' && parentNode.styleKind === targetStyleKind) {
+      if (targetStyleKind === 'size' && targetCmd === '\\normalsize' && parentSeq) {
+        const bodyCopy = parentNode.body.length > 0 ? parentNode.body : [{ kind: 'slot' as const }];
+        parentSeq.splice(lastStep.nodeIdx, 1, ...bodyCopy);
+        return {
+          latex: serializeAstToLatex(ast),
+          cursor: {
+            path: c.path.slice(0, -1),
+            offset: lastStep.nodeIdx + Math.min(c.offset, bodyCopy.length),
+          },
+          selection: null,
+        };
+      }
+      parentNode.cmd = targetCmd;
+      return { latex: serializeAstToLatex(ast), cursor: c, selection: null };
+    }
+  }
+
+  // Inserta un marcador estilizado con hueco editable en la posición del cursor
+  if (targetStyleKind === 'size' && targetCmd === '\\normalsize') {
+    return { latex, cursor: c, selection: null };
+  }
+  const seq = getSeqAtPath(ast, c.path);
+  if (!seq) return { latex, cursor: c, selection: null };
+  const styledNode: MathNode = {
+    kind: 'styled',
+    styleKind: targetStyleKind,
+    cmd: targetCmd,
+    body: [{ kind: 'slot' }],
+  };
+  let insertAt = c.offset;
+  if (seq[c.offset]?.kind === 'slot') {
+    seq.splice(c.offset, 1, styledNode);
+  } else if (c.offset > 0 && seq.length === 1 && seq[0].kind === 'slot') {
+    insertAt = 0;
+    seq.splice(0, 1, styledNode);
+  } else {
+    seq.splice(c.offset, 0, styledNode);
+  }
+  return {
+    latex: serializeAstToLatex(ast),
+    cursor: { path: [...c.path, { nodeIdx: insertAt, slot: 'body' }], offset: 0 },
+    selection: null,
   };
 }

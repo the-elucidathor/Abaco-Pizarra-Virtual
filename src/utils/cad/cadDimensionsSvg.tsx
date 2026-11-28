@@ -1,4 +1,6 @@
 import React from 'react';
+import type { TextFontFamily } from '../../types/whiteboard';
+import { getTextFontCss } from '../textFonts';
 import type { DimensionMetrics } from './cadDimensions';
 
 interface DimensionSvgContentProps {
@@ -6,6 +8,7 @@ interface DimensionSvgContentProps {
   strokeColor: string;
   textColor?: string;
   fontSize?: number;
+  fontFamily?: TextFontFamily;
   originX?: number;
   originY?: number;
   strokeWidth?: number;
@@ -18,6 +21,7 @@ export const DimensionSvgContent: React.FC<DimensionSvgContentProps> = ({
   strokeColor,
   textColor,
   fontSize = 12,
+  fontFamily,
   originX = 0,
   originY = 0,
   strokeWidth = 1.4,
@@ -142,7 +146,12 @@ export const DimensionSvgContent: React.FC<DimensionSvgContentProps> = ({
           dominantBaseline="central"
           fontSize={fontSize}
           fontWeight={600}
-          fontFamily="ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace"
+          // V1.11.8-2: Respeta tipografía opcional sin alterar cotas existentes
+          fontFamily={
+            fontFamily
+              ? getTextFontCss(fontFamily)
+              : 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace'
+          }
           fill={effectiveTextColor}
           stroke="rgba(255,255,255,0.88)"
           strokeWidth={3}

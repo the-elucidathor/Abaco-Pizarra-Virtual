@@ -77,7 +77,14 @@ export type ThemePreset =
   | 'blueprint'
   | 'sepia'
   | 'neon'
-  | 'aurora';
+  | 'custom'; // V1.11.8-14: Tema personalizado dinámico (reemplaza 'aurora')
+
+// V1.11.8-14: Colores base definidos por el usuario para el tema "Personalizado"
+export interface CustomThemeColors {
+  background: string;
+  accent: string;
+  text: string;
+}
 
 export interface Layer {
   id: string;
@@ -339,7 +346,7 @@ export interface DimensionObject extends BaseCanvasObject {
   p2: Point2D;
   p3?: Point2D;
   offsetPt: Point2D;
-  linearAxis?: 'auto' | 'horizontal' | 'vertical';
+  linearAxis?: 'auto' | 'horizontal' | 'vertical' | 'aligned';
   ordinateAxis?: 'x' | 'y';
   anchor1?: DimensionAnchor;
   anchor2?: DimensionAnchor;
@@ -347,6 +354,8 @@ export interface DimensionObject extends BaseCanvasObject {
   strokeColor: string;
   textColor: string;
   fontSize: number;
+  // V1.11.8-2: Tipografía opcional en cotas (retrocompatible con monospace por defecto)
+  fontFamily?: TextFontFamily;
   textOverride?: string;
 }
 
@@ -499,6 +508,10 @@ export interface AppSettings {
   spellcheckDefaultLang: SpellcheckLanguage;
   // En pizarrones de tamaño fijo, la rueda desplaza hojas (Ctrl+rueda hace zoom)
   wheelScrollSheets: boolean;
+  // V1.11.8-5: 4 ranuras persistentes de color personalizado en la paleta rápida
+  customColorSwatches?: string[];
+  // V1.11.8-14: Paleta de 3 colores para el tema "Personalizado"
+  customThemeColors?: CustomThemeColors;
 }
 
 export interface ToolOptions {

@@ -1,6 +1,10 @@
 import React, { useRef } from 'react';
 import { Check, Plus } from 'lucide-react';
-import type { CanvasBackgroundColorMode, ThemePreset } from '../types/whiteboard';
+import type {
+  CanvasBackgroundColorMode,
+  CustomThemeColors,
+  ThemePreset,
+} from '../types/whiteboard';
 import {
   CANVAS_BG_SUGGESTED_COLORS,
   getHexRelativeLuminance,
@@ -9,6 +13,7 @@ import {
 
 interface CanvasColorPickerControlProps {
   theme: ThemePreset;
+  customThemeColors?: CustomThemeColors;
   mode: CanvasBackgroundColorMode;
   customColor: string;
   adaptStrokeColors: boolean;
@@ -22,6 +27,7 @@ interface CanvasColorPickerControlProps {
 // Selector reutilizable de "Color del lienzo" sincronizado entre Propiedades y Configuración
 export const CanvasColorPickerControl: React.FC<CanvasColorPickerControlProps> = ({
   theme,
+  customThemeColors,
   mode,
   customColor,
   adaptStrokeColors,
@@ -31,7 +37,7 @@ export const CanvasColorPickerControl: React.FC<CanvasColorPickerControlProps> =
   compact = false,
 }) => {
   const colorInputRef = useRef<HTMLInputElement | null>(null);
-  const themeDefaultBg = getThemeBoardColors(theme).boardBg;
+  const themeDefaultBg = getThemeBoardColors(theme, customThemeColors).boardBg;
   const customLum = getHexRelativeLuminance(customColor);
   const customIsDark = customLum !== null ? customLum < 0.179 : false;
 

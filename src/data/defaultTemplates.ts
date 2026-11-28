@@ -46,7 +46,8 @@ export const DEFAULT_TOOL_OPTIONS: ToolOptions = {
   polygonSides: 6,
   stickyColor: '#fef08a',
   textColor: '#0f172a',
-  textFontSize: 18,
+  // V1.11.8-4: Nuevos cuadros de texto por defecto con tamaño 12
+  textFontSize: 12,
 };
 
 export function createEmptyBoard(
@@ -75,11 +76,17 @@ export function createEmptyBoard(
           zoom: 1,
         };
 
+  // V1.11.8-15: Normaliza tamaño de cuadrícula inicial (8 px a 100 px)
+  const safeGridSize =
+    typeof gridSize === 'number' && Number.isFinite(gridSize)
+      ? Math.max(8, Math.min(100, Math.round(gridSize)))
+      : 28;
+
   return {
     id: uid('board'),
     name,
     backgroundPattern: options.backgroundPattern ?? 'grid',
-    gridSize,
+    gridSize: safeGridSize,
     showCoordinates: false,
     snapToGrid: false,
     sizePreset: resolved.sizePreset,

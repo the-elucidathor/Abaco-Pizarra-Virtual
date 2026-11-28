@@ -16,9 +16,14 @@ import type {
   TextObject,
 } from '../types/whiteboard';
 import { type CadDraftingConfig, DEFAULT_CAD_CONFIG } from '../types/cad';
-import { computeDimensionMetrics } from '../utils/cad/cadDimensions';
+import { getCachedDimensionMetrics } from '../utils/cad/cadHitTest';
 import { DimensionSvgContent } from '../utils/cad/cadDimensionsSvg';
-import { getInitialEditCursor, type MathCursor } from '../utils/latexEditorEngine';
+import {
+  getInitialEditCursor,
+  type MathCursor,
+  type MathSelectionRange,
+} from '../utils/latexEditorEngine';
+import { getTextFontCss } from '../utils/textFonts';
 import { isOptEnabled } from '../utils/optFlags';
 import {
   type SelectionStyleSummary,
@@ -138,7 +143,13 @@ export const InfiniteBoardBgLayer = React.memo<InfiniteBoardBgLayerProps>(
                   x={panX}
                   y={panY}
                 >
-                  <circle data-export-role="dot-fill" cx={1.5} cy={1.5} r={1.25} fill={dotFill} />
+                  <circle
+                    data-export-role="dot-fill"
+                    cx={1.5}
+                    cy={1.5}
+                    r={gSize <= 12 ? 0.95 : 1.25}
+                    fill={dotFill}
+                  />
                 </pattern>
               )}
               {backgroundPattern === 'isometric' && (
@@ -169,6 +180,29 @@ export const InfiniteBoardBgLayer = React.memo<InfiniteBoardBgLayerProps>(
             data-board-background="true"
             className="absolute inset-0 w-full h-full pointer-events-none"
           >
+            {/* V1.11.8-15: Marcas de escala sincronizadas con gSize mediante patrones SVG sin sobrecarga DOM */}
+            <defs>
+              <pattern
+                id={`${patternId}-axis-ticks-x`}
+                x={panX}
+                y={panY - 4}
+                width={Math.max(4, gSize * zoom)}
+                height={8}
+                patternUnits="userSpaceOnUse"
+              >
+                <line x1={0} y1={0} x2={0} y2={8} stroke={axisStroke} strokeWidth={1} />
+              </pattern>
+              <pattern
+                id={`${patternId}-axis-ticks-y`}
+                x={panX - 4}
+                y={panY}
+                width={8}
+                height={Math.max(4, gSize * zoom)}
+                patternUnits="userSpaceOnUse"
+              >
+                <line x1={0} y1={0} x2={8} y2={0} stroke={axisStroke} strokeWidth={1} />
+              </pattern>
+            </defs>
             <line
               data-export-role="axis-stroke"
               x1={0}
@@ -178,6 +212,13 @@ export const InfiniteBoardBgLayer = React.memo<InfiniteBoardBgLayerProps>(
               stroke={axisStroke}
               strokeWidth={1.2}
             />
+            <rect
+              x={0}
+              y={panY - 4}
+              width="100%"
+              height={8}
+              fill={`url(#${patternId}-axis-ticks-x)`}
+            />
             <line
               data-export-role="axis-stroke"
               x1={panX}
@@ -186,6 +227,13 @@ export const InfiniteBoardBgLayer = React.memo<InfiniteBoardBgLayerProps>(
               y2="100%"
               stroke={axisStroke}
               strokeWidth={1.2}
+            />
+            <rect
+              x={panX - 4}
+              y={0}
+              width={8}
+              height="100%"
+              fill={`url(#${patternId}-axis-ticks-y)`}
             />
             <text
               data-export-role="axis-text"
@@ -227,6 +275,8 @@ InfiniteBoardBgLayer.displayName = 'InfiniteBoardBgLayer';
 interface CanvasObjectItemProps {
   obj: CanvasObject;
   isSelected: boolean;
+  // V1.11.8-7b: Estado de arrastre del elemento
+  isDragging?: boolean;
   locked: boolean;
   disablePointerEvents: boolean;
   isEditingText: boolean;
@@ -234,6 +284,8 @@ interface CanvasObjectItemProps {
   isEditingDimension: boolean;
   activeTableCell: TableCellCoord | null;
   equationCursor: MathCursor;
+  // V1.11.8-7d: Subselección activa en editor de ecuaciones
+  equationSelection?: MathSelectionRange | null;
   dimOverrideDraft: string;
   tableZoom: number;
   tableDockBarBottom: boolean;
@@ -265,6 +317,7 @@ interface CanvasObjectItemProps {
   onSetEditingDimensionId?: (id: string | null) => void;
   onSetEditingTableCell?: (tableId: string | null, cell: TableCellCoord | null) => void;
   onEquationCursorChange: (cursor: MathCursor) => void;
+  onEquationSelectionChange?: (selection: MathSelectionRange | null) => void;
   onOpenEquationModal: (obj: EquationObject) => void;
   onRequestTextEquationEditor?: (objId: string, req: InlineEquationRequest) => void;
   onActiveInlineTextEquationChange?: (
@@ -272,6 +325,10 @@ interface CanvasObjectItemProps {
     session: ActiveInlineEquationSession | null
   ) => void;
   onRichTextSelectionSummaryChange?: (summary: SelectionStyleSummary | null) => void;
+  onPushTextParagraphsSnapshot?: (
+    objId: string,
+    snapshotParagraphs: TextObject['paragraphs']
+  ) => void;
   onRepairTextBox: (id: string) => void;
   onRepairTableObject?: (id: string) => void;
   onCommitTableWithSnapshot: (
@@ -288,6 +345,7 @@ const CanvasObjectItem = React.memo<CanvasObjectItemProps>(
   ({
     obj,
     isSelected,
+    isDragging = false,
     locked,
     disablePointerEvents,
     isEditingText,
@@ -295,6 +353,7 @@ const CanvasObjectItem = React.memo<CanvasObjectItemProps>(
     isEditingDimension,
     activeTableCell,
     equationCursor,
+    equationSelection = null,
     dimOverrideDraft,
     tableZoom,
     tableDockBarBottom,
@@ -318,10 +377,12 @@ const CanvasObjectItem = React.memo<CanvasObjectItemProps>(
     onSetEditingDimensionId,
     onSetEditingTableCell,
     onEquationCursorChange,
+    onEquationSelectionChange,
     onOpenEquationModal,
     onRequestTextEquationEditor,
     onActiveInlineTextEquationChange,
     onRichTextSelectionSummaryChange,
+    onPushTextParagraphsSnapshot,
     onRepairTextBox,
     onRepairTableObject,
     onCommitTableWithSnapshot,
@@ -463,7 +524,7 @@ const CanvasObjectItem = React.memo<CanvasObjectItemProps>(
     const renderDimensionNode = (dim: DimensionObject) => {
       const w = Math.max(10, dim.width);
       const h = Math.max(10, dim.height);
-      const metrics = computeDimensionMetrics(dim, cadConfigForDim);
+      const metrics = getCachedDimensionMetrics(dim, cadConfigForDim);
       const commitOverride = (val: string) => {
         const cleaned = val.trim();
         const nextOverride =
@@ -479,11 +540,13 @@ const CanvasObjectItem = React.memo<CanvasObjectItemProps>(
       return (
         <div className="relative w-full h-full">
           <svg width="100%" height="100%" viewBox={`0 0 ${w} ${h}`} className="overflow-visible block">
+            {/* V1.11.8-2: Tipografía opcional de cota */}
             <DimensionSvgContent
               metrics={metrics}
               strokeColor={resolveDisplayStrokeColor(dim.strokeColor)}
               textColor={resolveDisplayStrokeColor(dim.textColor)}
               fontSize={dim.fontSize}
+              fontFamily={dim.fontFamily}
               originX={dim.x}
               originY={dim.y}
               hideLabel={isEditingDimension}
@@ -512,6 +575,7 @@ const CanvasObjectItem = React.memo<CanvasObjectItemProps>(
                 top: metrics.textPos.y - dim.y,
                 transform: 'translate(-50%, -50%)',
                 fontSize: `${Math.max(11, dim.fontSize)}px`,
+                fontFamily: dim.fontFamily ? getTextFontCss(dim.fontFamily) : undefined,
               }}
               className="absolute z-50 w-28 px-1.5 py-0.5 text-center font-mono-tabular font-semibold bg-white dark:bg-slate-900 text-slate-900 dark:text-white border-2 border-blue-600 rounded shadow-lg outline-none"
             />
@@ -568,6 +632,11 @@ const CanvasObjectItem = React.memo<CanvasObjectItemProps>(
                   (o) => syncTextObjectFromParagraphs(o as TextObject, nextParagraphs),
                   recordHistory
                 )
+              }
+              onPushParagraphsSnapshot={
+                onPushTextParagraphsSnapshot
+                  ? (snapParagraphs) => onPushTextParagraphsSnapshot(txt.id, snapParagraphs)
+                  : undefined
               }
               onChangeListStyle={(nextListStyle) => {
                 onUpdateObjects(
@@ -665,7 +734,8 @@ const CanvasObjectItem = React.memo<CanvasObjectItemProps>(
                 ? Math.max(TEXT_AUTO_MAX_WIDTH, obj.width || TEXT_AUTO_MAX_WIDTH)
                 : TEXT_AUTO_MAX_WIDTH
               : undefined,
-          ...(obj.type === 'text' || obj.type === 'table'
+          // V1.11.8-16: Tablas conservan altura exacta para permitir compactación libre hasta ~40 px
+          ...(obj.type === 'text'
             ? { minHeight: obj.height, height: 'auto' }
             : { height: obj.height }),
           opacity: obj.opacity,
@@ -806,9 +876,12 @@ const CanvasObjectItem = React.memo<CanvasObjectItemProps>(
                 : obj
             }
             isEditing={isEditingEquation}
+            isDragging={isDragging}
             inputRef={isEditingEquation ? equationInputRef : undefined}
             cursor={equationCursor}
+            selection={isEditingEquation ? equationSelection : null}
             onCursorChange={onEquationCursorChange}
+            onSelectionChange={isEditingEquation ? onEquationSelectionChange : undefined}
             onChangeLatex={(latex, recordHistory) =>
               onUpdateObjects(
                 [obj.id],
@@ -835,7 +908,8 @@ const CanvasObjectItem = React.memo<CanvasObjectItemProps>(
               onSetEditingEquationId(null);
             }}
             onOpenFullModal={() => onOpenEquationModal(obj)}
-            onGripPointerDown={(e) => onObjectPointerDown(e, obj)}
+            // V1.11.8-7a: El tirador superior izquierdo inicia arrastre incluso en modo edición
+            onGripPointerDown={(e) => onObjectPointerDown(e, obj, true)}
           />
         )}
 
@@ -870,6 +944,7 @@ const CanvasObjectItem = React.memo<CanvasObjectItemProps>(
     return (
       prev.obj === next.obj &&
       prev.isSelected === next.isSelected &&
+      prev.isDragging === next.isDragging &&
       prev.locked === next.locked &&
       prev.disablePointerEvents === next.disablePointerEvents &&
       prev.isEditingText === next.isEditingText &&
@@ -877,6 +952,7 @@ const CanvasObjectItem = React.memo<CanvasObjectItemProps>(
       prev.isEditingDimension === next.isEditingDimension &&
       prev.activeTableCell === next.activeTableCell &&
       prev.equationCursor === next.equationCursor &&
+      prev.equationSelection === next.equationSelection &&
       prev.dimOverrideDraft === next.dimOverrideDraft &&
       prev.tableZoom === next.tableZoom &&
       prev.tableDockBarBottom === next.tableDockBarBottom &&
@@ -891,6 +967,8 @@ const CanvasObjectItem = React.memo<CanvasObjectItemProps>(
       prev.onObjectContextMenu === next.onObjectContextMenu &&
       prev.onRequestTextEquationEditor === next.onRequestTextEquationEditor &&
       prev.onActiveInlineTextEquationChange === next.onActiveInlineTextEquationChange &&
+      prev.onEquationSelectionChange === next.onEquationSelectionChange &&
+      prev.onPushTextParagraphsSnapshot === next.onPushTextParagraphsSnapshot &&
       prev.onUpdateObjects === next.onUpdateObjects
     );
   }
@@ -901,6 +979,7 @@ CanvasObjectItem.displayName = 'CanvasObjectItem';
 export interface StaticObjectsLayerProps {
   objects: CanvasObject[];
   selectedIdSet: Set<string>;
+  draggingIdSet?: Set<string> | null;
   layerMap: Map<string, { visible: boolean; locked: boolean }>;
   disablePointerEvents: boolean;
   editingTextId: string | null;
@@ -909,6 +988,7 @@ export interface StaticObjectsLayerProps {
   editingTableId?: string | null;
   editingTableCell?: TableCellCoord | null;
   equationCursor: MathCursor;
+  equationSelection?: MathSelectionRange | null;
   dimOverrideDraft: string;
   zoom: number;
   shouldClipToFrame: boolean;
@@ -941,6 +1021,7 @@ export interface StaticObjectsLayerProps {
   onSetEditingDimensionId?: (id: string | null) => void;
   onSetEditingTableCell?: (tableId: string | null, cell: TableCellCoord | null) => void;
   onEquationCursorChange: (cursor: MathCursor) => void;
+  onEquationSelectionChange?: (selection: MathSelectionRange | null) => void;
   onOpenEquationModal: (obj: EquationObject) => void;
   onRequestTextEquationEditor?: (objId: string, req: InlineEquationRequest) => void;
   onActiveInlineTextEquationChange?: (
@@ -948,6 +1029,10 @@ export interface StaticObjectsLayerProps {
     session: ActiveInlineEquationSession | null
   ) => void;
   onRichTextSelectionSummaryChange?: (summary: SelectionStyleSummary | null) => void;
+  onPushTextParagraphsSnapshot?: (
+    objId: string,
+    snapshotParagraphs: TextObject['paragraphs']
+  ) => void;
   onRepairTextBox: (id: string) => void;
   onRepairTableObject?: (id: string) => void;
   onCommitTableWithSnapshot: (
@@ -965,6 +1050,7 @@ export const StaticObjectsLayer = React.memo<StaticObjectsLayerProps>(
   ({
     objects,
     selectedIdSet,
+    draggingIdSet = null,
     layerMap,
     disablePointerEvents,
     editingTextId,
@@ -973,6 +1059,7 @@ export const StaticObjectsLayer = React.memo<StaticObjectsLayerProps>(
     editingTableId,
     editingTableCell,
     equationCursor,
+    equationSelection = null,
     dimOverrideDraft,
     zoom,
     shouldClipToFrame,
@@ -997,10 +1084,12 @@ export const StaticObjectsLayer = React.memo<StaticObjectsLayerProps>(
     onSetEditingDimensionId,
     onSetEditingTableCell,
     onEquationCursorChange,
+    onEquationSelectionChange,
     onOpenEquationModal,
     onRequestTextEquationEditor,
     onActiveInlineTextEquationChange,
     onRichTextSelectionSummaryChange,
+    onPushTextParagraphsSnapshot,
     onRepairTextBox,
     onRepairTableObject,
     onCommitTableWithSnapshot,
@@ -1012,6 +1101,7 @@ export const StaticObjectsLayer = React.memo<StaticObjectsLayerProps>(
       <>
         {objects.map((obj) => {
           const isSelected = selectedIdSet.has(obj.id);
+          const isDragging = Boolean(draggingIdSet?.has(obj.id));
           const layer = layerMap.get(obj.layerId);
           const locked = obj.locked || Boolean(layer?.locked);
           const isEq = editingEquationId === obj.id;
@@ -1023,6 +1113,7 @@ export const StaticObjectsLayer = React.memo<StaticObjectsLayerProps>(
               key={obj.id}
               obj={obj}
               isSelected={isSelected}
+              isDragging={isDragging}
               locked={locked}
               disablePointerEvents={disablePointerEvents}
               isEditingText={editingTextId === obj.id}
@@ -1030,6 +1121,7 @@ export const StaticObjectsLayer = React.memo<StaticObjectsLayerProps>(
               isEditingDimension={isDim}
               activeTableCell={isTblEditing}
               equationCursor={isEq ? equationCursor : DEFAULT_EQ_CURSOR}
+              equationSelection={isEq ? equationSelection : null}
               dimOverrideDraft={isDim ? dimOverrideDraft : ''}
               tableZoom={obj.type === 'table' ? zoom : 1}
               tableDockBarBottom={
@@ -1056,10 +1148,12 @@ export const StaticObjectsLayer = React.memo<StaticObjectsLayerProps>(
               onSetEditingDimensionId={onSetEditingDimensionId}
               onSetEditingTableCell={onSetEditingTableCell}
               onEquationCursorChange={onEquationCursorChange}
+              onEquationSelectionChange={onEquationSelectionChange}
               onOpenEquationModal={onOpenEquationModal}
               onRequestTextEquationEditor={onRequestTextEquationEditor}
               onActiveInlineTextEquationChange={onActiveInlineTextEquationChange}
               onRichTextSelectionSummaryChange={onRichTextSelectionSummaryChange}
+              onPushTextParagraphsSnapshot={onPushTextParagraphsSnapshot}
               onRepairTextBox={onRepairTextBox}
               onRepairTableObject={onRepairTableObject}
               onCommitTableWithSnapshot={onCommitTableWithSnapshot}

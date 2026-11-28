@@ -50,9 +50,9 @@ async function readAppVersion(): Promise<string> {
   try {
     const pkgRaw = await fs.readFile(path.resolve(__dirname, 'package.json'), 'utf-8');
     const pkg = JSON.parse(pkgRaw) as { version?: string };
-    return typeof pkg.version === 'string' && pkg.version.trim() ? pkg.version.trim() : '1.11.6';
+    return typeof pkg.version === 'string' && pkg.version.trim() ? pkg.version.trim() : '1.11.8';
   } catch {
-    return '1.11.6';
+    return '1.11.8';
   }
 }
 

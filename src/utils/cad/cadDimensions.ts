@@ -1,4 +1,4 @@
-import type { CadDraftingConfig, CadLinearDimAxis } from '../../types/cad';
+import { DEFAULT_CAD_CONFIG, type CadDraftingConfig, type CadLinearDimAxis } from '../../types/cad';
 import type {
   CanvasObject,
   DimensionAnchor,
@@ -70,8 +70,14 @@ export function resolveLinearAxisMode(
   p2: Point2D,
   offsetPt: Point2D,
   explicit?: CadLinearDimAxis
-): 'horizontal' | 'vertical' {
-  if (explicit === 'horizontal' || explicit === 'vertical') return explicit;
+): 'horizontal' | 'vertical' | 'aligned' {
+  if (
+    explicit === 'horizontal' ||
+    explicit === 'vertical' ||
+    explicit === 'aligned'
+  ) {
+    return explicit;
+  }
   const minX = Math.min(p1.x, p2.x);
   const maxX = Math.max(p1.x, p2.x);
   const minY = Math.min(p1.y, p2.y);
@@ -80,6 +86,27 @@ export function resolveLinearAxisMode(
   // If offsetPt lies horizontally outside [minX, maxX] and vertically inside [minY, maxY], measure vertical ΔY
   const outX = offsetPt.x < minX ? minX - offsetPt.x : offsetPt.x > maxX ? offsetPt.x - maxX : 0;
   const outY = offsetPt.y < minY ? minY - offsetPt.y : offsetPt.y > maxY ? offsetPt.y - maxY : 0;
+
+  const absDx = Math.abs(p2.x - p1.x);
+  const absDy = Math.abs(p2.y - p1.y);
+  const isDiagonal =
+    absDx >= 12 &&
+    absDy >= 12 &&
+    Math.min(absDx, absDy) / Math.max(absDx, absDy) >= 0.18;
+
+  if (isDiagonal) {
+    if (outX === 0 && outY === 0) {
+      return 'aligned';
+    }
+    if (
+      outX > 0 &&
+      outY > 0 &&
+      Math.abs(outX - outY) <= Math.max(outX, outY) * 0.45
+    ) {
+      return 'aligned';
+    }
+  }
+
   if (outX > outY + 4) return 'vertical';
   if (outY > outX + 4) return 'horizontal';
 
@@ -117,10 +144,13 @@ export function computeDimensionMetrics(
   let textAngleDeg = 0;
 
   const { p1, p2, offsetPt } = dim;
+  const resolvedLinearAxis =
+    dim.dimKind === 'linear'
+      ? resolveLinearAxisMode(p1, p2, offsetPt, dim.linearAxis)
+      : null;
 
-  if (dim.dimKind === 'linear') {
-    const axis = resolveLinearAxisMode(p1, p2, offsetPt, dim.linearAxis);
-    if (axis === 'horizontal') {
+  if (dim.dimKind === 'linear' && resolvedLinearAxis !== 'aligned') {
+    if (resolvedLinearAxis === 'horizontal') {
       const yLine = offsetPt.y;
       const d1 = { x: p1.x, y: yLine };
       const d2 = { x: p2.x, y: yLine };
@@ -163,7 +193,7 @@ export function computeDimensionMetrics(
       textPos = { x: xLine - 8, y: (d1.y + d2.y) / 2 };
       textAngleDeg = -90;
     }
-  } else if (dim.dimKind === 'aligned') {
+  } else if (dim.dimKind === 'aligned' || resolvedLinearAxis === 'aligned') {
     const dx = p2.x - p1.x;
     const dy = p2.y - p1.y;
     const len = Math.hypot(dx, dy);
@@ -656,4 +686,332 @@ export function extractCircleRadiusAtPoint(
     rimPt,
     radiusWorld: Math.hypot(rimPt.x - center.x, rimPt.y - center.y),
   };
+}
+
+// V1.11.8-2: Lectura y actualización editable del desplazamiento de la línea de cota (px del mundo)
+export function getDimensionLineOffset(
+  dim: DimensionObject,
+  config: CadDraftingConfig = DEFAULT_CAD_CONFIG
+): { value: number; min: number; max: number; label: string } | null {
+  try {
+    const { p1, p2, offsetPt } = dim;
+    const linearAxis =
+      dim.dimKind === 'linear'
+        ? resolveLinearAxisMode(p1, p2, offsetPt, dim.linearAxis)
+        : null;
+    if (dim.dimKind === 'linear' && linearAxis && linearAxis !== 'aligned') {
+      if (linearAxis === 'horizontal') {
+        const refY = (p1.y + p2.y) / 2;
+        return {
+          value: Math.round(offsetPt.y - refY),
+          min: -2000,
+          max: 2000,
+          label: 'Desplazamiento (px)',
+        };
+      }
+      const refX = (p1.x + p2.x) / 2;
+      return {
+        value: Math.round(offsetPt.x - refX),
+        min: -2000,
+        max: 2000,
+        label: 'Desplazamiento (px)',
+      };
+    }
+    if (dim.dimKind === 'aligned' || linearAxis === 'aligned') {
+      const dx = p2.x - p1.x;
+      const dy = p2.y - p1.y;
+      const len = Math.hypot(dx, dy);
+      if (len < 1e-3) return null;
+      const nx = -dy / len;
+      const ny = dx / len;
+      const signed = (offsetPt.x - p1.x) * nx + (offsetPt.y - p1.y) * ny;
+      return {
+        value: Math.round(signed),
+        min: -2000,
+        max: 2000,
+        label: 'Desplazamiento (px)',
+      };
+    }
+    if (dim.dimKind === 'angular') {
+      const radius = Math.max(20, Math.hypot(offsetPt.x - p1.x, offsetPt.y - p1.y));
+      return {
+        value: Math.round(radius),
+        min: 20,
+        max: 2000,
+        label: 'Radio de arco (px)',
+      };
+    }
+    if (dim.dimKind === 'radial' || dim.dimKind === 'diametral') {
+      const dist = Math.hypot(offsetPt.x - p1.x, offsetPt.y - p1.y);
+      return {
+        value: Math.round(dist),
+        min: 10,
+        max: 2000,
+        label: 'Extensión (px)',
+      };
+    }
+    if (dim.dimKind === 'ordinate') {
+      const ordAxis: 'x' | 'y' =
+        dim.ordinateAxis ??
+        (Math.abs(offsetPt.y - p1.y) >= Math.abs(offsetPt.x - p1.x) ? 'x' : 'y');
+      const delta = ordAxis === 'x' ? offsetPt.y - p1.y : offsetPt.x - p1.x;
+      return {
+        value: Math.round(delta),
+        min: -2000,
+        max: 2000,
+        label: 'Desplazamiento (px)',
+      };
+    }
+    void config;
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+export function withDimensionLineOffset(
+  dim: DimensionObject,
+  nextOffset: number,
+  config: CadDraftingConfig = DEFAULT_CAD_CONFIG
+): DimensionObject {
+  const safeVal = Number.isFinite(nextOffset) ? nextOffset : 0;
+  let nextOffsetPt = { ...dim.offsetPt };
+  let nextLinearAxis = dim.linearAxis;
+
+  const resolvedLinearAxis =
+    dim.dimKind === 'linear'
+      ? resolveLinearAxisMode(dim.p1, dim.p2, dim.offsetPt, dim.linearAxis)
+      : null;
+
+  if (dim.dimKind === 'linear' && resolvedLinearAxis && resolvedLinearAxis !== 'aligned') {
+    nextLinearAxis = resolvedLinearAxis;
+    if (resolvedLinearAxis === 'horizontal') {
+      const refY = (dim.p1.y + dim.p2.y) / 2;
+      nextOffsetPt = { ...dim.offsetPt, y: refY + safeVal };
+    } else {
+      const refX = (dim.p1.x + dim.p2.x) / 2;
+      nextOffsetPt = { ...dim.offsetPt, x: refX + safeVal };
+    }
+  } else if (dim.dimKind === 'aligned' || resolvedLinearAxis === 'aligned') {
+    if (dim.dimKind === 'linear') {
+      nextLinearAxis = 'aligned';
+    }
+    const dx = dim.p2.x - dim.p1.x;
+    const dy = dim.p2.y - dim.p1.y;
+    const len = Math.hypot(dx, dy);
+    if (len >= 1e-3) {
+      const ux = dx / len;
+      const uy = dy / len;
+      const nx = -uy;
+      const ny = ux;
+      const along = (dim.offsetPt.x - dim.p1.x) * ux + (dim.offsetPt.y - dim.p1.y) * uy;
+      nextOffsetPt = {
+        x: dim.p1.x + ux * along + nx * safeVal,
+        y: dim.p1.y + uy * along + ny * safeVal,
+      };
+    }
+  } else if (dim.dimKind === 'angular') {
+    const dx = dim.offsetPt.x - dim.p1.x;
+    const dy = dim.offsetPt.y - dim.p1.y;
+    const curLen = Math.hypot(dx, dy);
+    const radius = Math.max(20, safeVal);
+    const ang = curLen > 1e-3 ? Math.atan2(dy, dx) : Math.atan2(dim.p2.y - dim.p1.y, dim.p2.x - dim.p1.x);
+    nextOffsetPt = {
+      x: dim.p1.x + radius * Math.cos(ang),
+      y: dim.p1.y + radius * Math.sin(ang),
+    };
+  } else if (dim.dimKind === 'radial' || dim.dimKind === 'diametral') {
+    const dx = dim.offsetPt.x - dim.p1.x;
+    const dy = dim.offsetPt.y - dim.p1.y;
+    const curLen = Math.hypot(dx, dy);
+    const ux = curLen > 1e-3 ? dx / curLen : (dim.p2.x - dim.p1.x) / Math.max(1, Math.hypot(dim.p2.x - dim.p1.x, dim.p2.y - dim.p1.y));
+    const uy = curLen > 1e-3 ? dy / curLen : (dim.p2.y - dim.p1.y) / Math.max(1, Math.hypot(dim.p2.x - dim.p1.x, dim.p2.y - dim.p1.y));
+    const dist = Math.max(10, safeVal);
+    nextOffsetPt = {
+      x: dim.p1.x + ux * dist,
+      y: dim.p1.y + uy * dist,
+    };
+  } else if (dim.dimKind === 'ordinate') {
+    const ordAxis: 'x' | 'y' =
+      dim.ordinateAxis ??
+      (Math.abs(dim.offsetPt.y - dim.p1.y) >= Math.abs(dim.offsetPt.x - dim.p1.x) ? 'x' : 'y');
+    nextOffsetPt =
+      ordAxis === 'x'
+        ? { ...dim.offsetPt, y: dim.p1.y + safeVal }
+        : { ...dim.offsetPt, x: dim.p1.x + safeVal };
+  }
+
+  const updated: DimensionObject = {
+    ...dim,
+    linearAxis: nextLinearAxis,
+    offsetPt: nextOffsetPt,
+  };
+  const metrics = computeDimensionMetrics(updated, config);
+  return {
+    ...updated,
+    x: metrics.bbox.x,
+    y: metrics.bbox.y,
+    width: metrics.bbox.width,
+    height: metrics.bbox.height,
+  };
+}
+
+// V1.11.8-2: Manejador manual en la pizarra para desplazar la línea de cota
+export function getDimensionOffsetHandleWorld(
+  dim: DimensionObject,
+  metrics: DimensionMetrics
+): Point2D {
+  if (dim.dimKind === 'linear' || dim.dimKind === 'aligned') {
+    if (metrics.dimLines.length > 0) {
+      const [d1, d2] = metrics.dimLines[0];
+      return { x: (d1.x + d2.x) / 2, y: (d1.y + d2.y) / 2 };
+    }
+    return { ...dim.offsetPt };
+  }
+  if (dim.dimKind === 'angular' && metrics.dimArc) {
+    const { center, radius, startPt, endPt, sweepFlag } = metrics.dimArc;
+    const a1 = Math.atan2(startPt.y - center.y, startPt.x - center.x);
+    const a2 = Math.atan2(endPt.y - center.y, endPt.x - center.x);
+    const norm = (a: number) => ((a % (2 * Math.PI)) + 2 * Math.PI) % (2 * Math.PI);
+    const sweep = sweepFlag === 1 ? norm(a2 - a1) : norm(a1 - a2);
+    const midRad = a1 + (sweepFlag === 1 ? 1 : -1) * (sweep / 2);
+    return {
+      x: center.x + radius * Math.cos(midRad),
+      y: center.y + radius * Math.sin(midRad),
+    };
+  }
+  if ((dim.dimKind === 'radial' || dim.dimKind === 'diametral') && metrics.dimLines.length > 0) {
+    const lastSeg = metrics.dimLines[metrics.dimLines.length - 1];
+    return { ...lastSeg[1] };
+  }
+  return { ...dim.offsetPt };
+}
+
+export function getDimensionOffsetHandleCursor(dim: DimensionObject): string {
+  if (dim.dimKind === 'linear') {
+    const axis = resolveLinearAxisMode(dim.p1, dim.p2, dim.offsetPt, dim.linearAxis);
+    if (axis === 'aligned') return 'move';
+    return axis === 'horizontal' ? 'ns-resize' : 'ew-resize';
+  }
+  return 'move';
+}
+
+export function applyDimensionManualOffsetDrag(
+  dim: DimensionObject,
+  targetWorld: Point2D,
+  config: CadDraftingConfig = DEFAULT_CAD_CONFIG,
+  opts?: { shiftKey?: boolean; lockLinearAxis?: 'horizontal' | 'vertical' | 'aligned' }
+): DimensionObject {
+  try {
+    const shiftKey = Boolean(opts?.shiftKey);
+    const dragLinearAxis =
+      dim.dimKind === 'linear'
+        ? opts?.lockLinearAxis ??
+          resolveLinearAxisMode(dim.p1, dim.p2, dim.offsetPt, dim.linearAxis)
+        : null;
+    if (dim.dimKind === 'linear' && dragLinearAxis && dragLinearAxis !== 'aligned') {
+      const refCoord =
+        dragLinearAxis === 'horizontal'
+          ? (dim.p1.y + dim.p2.y) / 2
+          : (dim.p1.x + dim.p2.x) / 2;
+      const targetCoord = dragLinearAxis === 'horizontal' ? targetWorld.y : targetWorld.x;
+      let rawOffset = targetCoord - refCoord;
+      if (shiftKey) {
+        rawOffset = Math.round(rawOffset / 10) * 10;
+      }
+      return withDimensionLineOffset(
+        { ...dim, linearAxis: dragLinearAxis },
+        rawOffset,
+        config
+      );
+    }
+
+    if (dim.dimKind === 'aligned' || dragLinearAxis === 'aligned') {
+      const dx = dim.p2.x - dim.p1.x;
+      const dy = dim.p2.y - dim.p1.y;
+      const len = Math.hypot(dx, dy);
+      if (len < 1e-3) return dim;
+      const nx = -dy / len;
+      const ny = dx / len;
+      let rawOffset = (targetWorld.x - dim.p1.x) * nx + (targetWorld.y - dim.p1.y) * ny;
+      if (shiftKey) {
+        rawOffset = Math.round(rawOffset / 10) * 10;
+      }
+      return withDimensionLineOffset(
+        dim.dimKind === 'linear' ? { ...dim, linearAxis: 'aligned' } : dim,
+        rawOffset,
+        config
+      );
+    }
+
+    if (dim.dimKind === 'angular') {
+      let rawRadius = Math.max(20, Math.hypot(targetWorld.x - dim.p1.x, targetWorld.y - dim.p1.y));
+      if (shiftKey) {
+        rawRadius = Math.max(20, Math.round(rawRadius / 10) * 10);
+      }
+      return withDimensionLineOffset(dim, rawRadius, config);
+    }
+
+    if (dim.dimKind === 'radial' || dim.dimKind === 'diametral') {
+      let dx = targetWorld.x - dim.p1.x;
+      let dy = targetWorld.y - dim.p1.y;
+      let dist = Math.hypot(dx, dy);
+      if (dist < 1e-3) {
+        const fbDx = dim.offsetPt.x - dim.p1.x;
+        const fbDy = dim.offsetPt.y - dim.p1.y;
+        const fbLen = Math.hypot(fbDx, fbDy);
+        dx = fbLen > 1e-3 ? (fbDx / fbLen) * 10 : 10;
+        dy = fbLen > 1e-3 ? (fbDy / fbLen) * 10 : 0;
+        dist = 10;
+      } else if (dist < 10) {
+        dx = (dx / dist) * 10;
+        dy = (dy / dist) * 10;
+        dist = 10;
+      }
+      if (shiftKey) {
+        const snapAng =
+          Math.round((Math.atan2(dy, dx) * 180) / Math.PI / 15) * (Math.PI / 12);
+        const snapDist = Math.max(10, Math.round(dist / 10) * 10);
+        dx = snapDist * Math.cos(snapAng);
+        dy = snapDist * Math.sin(snapAng);
+      }
+      const updated: DimensionObject = {
+        ...dim,
+        offsetPt: { x: dim.p1.x + dx, y: dim.p1.y + dy },
+      };
+      const metrics = computeDimensionMetrics(updated, config);
+      return {
+        ...updated,
+        x: metrics.bbox.x,
+        y: metrics.bbox.y,
+        width: metrics.bbox.width,
+        height: metrics.bbox.height,
+      };
+    }
+
+    if (dim.dimKind === 'ordinate') {
+      const nextPt = shiftKey
+        ? {
+            x: dim.p1.x + Math.round((targetWorld.x - dim.p1.x) / 10) * 10,
+            y: dim.p1.y + Math.round((targetWorld.y - dim.p1.y) / 10) * 10,
+          }
+        : { x: targetWorld.x, y: targetWorld.y };
+      const updated: DimensionObject = {
+        ...dim,
+        offsetPt: nextPt,
+      };
+      const metrics = computeDimensionMetrics(updated, config);
+      return {
+        ...updated,
+        x: metrics.bbox.x,
+        y: metrics.bbox.y,
+        width: metrics.bbox.width,
+        height: metrics.bbox.height,
+      };
+    }
+
+    return dim;
+  } catch {
+    return dim;
+  }
 }

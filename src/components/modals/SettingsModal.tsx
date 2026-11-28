@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
+  AlertTriangle,
   Check,
   ChevronDown,
   Keyboard,
@@ -7,6 +8,7 @@ import {
   MousePointer2,
   PaintBucket,
   Palette,
+  RotateCcw,
   SlidersHorizontal,
   SpellCheck,
   Sun,
@@ -15,10 +17,12 @@ import {
 } from 'lucide-react';
 import type {
   AppSettings,
+  CustomThemeColors,
   SpellcheckLanguage,
   ThemePreset,
 } from '../../types/whiteboard';
 import {
+  DEFAULT_CUSTOM_THEME_COLORS,
   loadSettingsOpenSections,
   saveSettingsOpenSections,
 } from '../../services/storageService';
@@ -33,7 +37,11 @@ import {
   setRememberedTextLang,
   subscribePersonalDictionary,
 } from '../../utils/spellcheck/personalDictionary';
-import { getEffectiveBoardColors } from '../../utils/themePalette';
+import {
+  deriveCustomThemeTokens,
+  getEffectiveBoardColors,
+  getHexRelativeLuminance,
+} from '../../utils/themePalette';
 import { CanvasColorPickerControl } from '../CanvasColorPickerControl';
 import { APP_VERSION } from '../../version';
 
@@ -115,11 +123,16 @@ const THEME_OPTIONS: {
     subtitle: 'Magenta y cian brillante',
     swatches: ['#12001F', '#D946EF', '#22D3EE'],
   },
+  // V1.11.8-14: Reemplaza tema Aurora por tema Personalizado dinámico
   {
-    id: 'aurora',
-    name: 'Aurora',
-    subtitle: 'Obsidiana, esmeralda y oro',
-    swatches: ['#061613', '#10B981', '#FBBF24'],
+    id: 'custom',
+    name: 'Personalizado',
+    subtitle: 'Fondo, acento y texto a tu gusto',
+    swatches: [
+      DEFAULT_CUSTOM_THEME_COLORS.background,
+      DEFAULT_CUSTOM_THEME_COLORS.accent,
+      DEFAULT_CUSTOM_THEME_COLORS.text,
+    ],
   },
 ];
 
@@ -164,6 +177,55 @@ const CURSOR_COLOR_SWATCHES = [
   { hex: '#facc15', label: 'Amarillo' },
   { hex: '#0f172a', label: 'Negro tinta' },
 ];
+
+// V1.11.8-14: Paletas discretas de 12 colores para el tema Personalizado (evita lag de <input type="color">)
+const CUSTOM_THEME_PALETTES_12: Record<
+  keyof CustomThemeColors,
+  { hex: string; label: string }[]
+> = {
+  background: [
+    { hex: '#ffffff', label: 'Blanco puro' },
+    { hex: '#f8fafc', label: 'Blanco pizarra (predeterminado)' },
+    { hex: '#f1f5f9', label: 'Gris claro' },
+    { hex: '#eff6ff', label: 'Azul hielo' },
+    { hex: '#ecfdf5', label: 'Menta suave' },
+    { hex: '#fef3c7', label: 'Crema cálido' },
+    { hex: '#0f172a', label: 'Azul noche' },
+    { hex: '#111827', label: 'Carbón' },
+    { hex: '#1e293b', label: 'Pizarra oscura' },
+    { hex: '#0b2a4a', label: 'Azul plano' },
+    { hex: '#1f1638', label: 'Índigo profundo' },
+    { hex: '#18181b', label: 'Grafito' },
+  ],
+  accent: [
+    { hex: '#2563eb', label: 'Azul clásico (predeterminado)' },
+    { hex: '#0284c7', label: 'Cian técnico' },
+    { hex: '#0d9488', label: 'Turquesa' },
+    { hex: '#16a34a', label: 'Esmeralda' },
+    { hex: '#4f46e5', label: 'Índigo' },
+    { hex: '#7c3aed', label: 'Violeta' },
+    { hex: '#db2777', label: 'Magenta' },
+    { hex: '#dc2626', label: 'Rojo' },
+    { hex: '#ea580c', label: 'Naranja' },
+    { hex: '#d97706', label: 'Ámbar' },
+    { hex: '#334155', label: 'Pizarra' },
+    { hex: '#0f172a', label: 'Negro tinta' },
+  ],
+  text: [
+    { hex: '#0f172a', label: 'Negro tinta (predeterminado)' },
+    { hex: '#1e293b', label: 'Gris oscuro' },
+    { hex: '#334155', label: 'Pizarra media' },
+    { hex: '#1e3a8a', label: 'Azul marino' },
+    { hex: '#14532d', label: 'Verde bosque' },
+    { hex: '#7c2d12', label: 'Sepia oscuro' },
+    { hex: '#ffffff', label: 'Blanco puro' },
+    { hex: '#f8fafc', label: 'Blanco suave' },
+    { hex: '#e2e8f0', label: 'Gris claro' },
+    { hex: '#fef08a', label: 'Crema claro' },
+    { hex: '#a5f3fc', label: 'Cian claro' },
+    { hex: '#e9d5ff', label: 'Lavanda claro' },
+  ],
+};
 
 interface AccordionSectionProps {
   id: SettingsSectionId;
@@ -272,6 +334,37 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     loadPersonalDictionary()
   );
 
+  // V1.11.8-14: Estado discreto para paletas de 12 colores del tema Personalizado (aplicación inmediata sin lag)
+  const customColors: CustomThemeColors = {
+    ...DEFAULT_CUSTOM_THEME_COLORS,
+    ...(settings.customThemeColors || {}),
+  };
+
+  const selectCustomThemeColor = (
+    key: keyof CustomThemeColors,
+    hex: string
+  ) => {
+    const nextColors: CustomThemeColors = {
+      ...customColors,
+      [key]: hex,
+    };
+    onUpdateSettings({
+      ...settings,
+      theme: 'custom',
+      customThemeColors: nextColors,
+    });
+  };
+
+  const resetCustomThemeColors = () => {
+    onUpdateSettings({
+      ...settings,
+      theme: 'custom',
+      customThemeColors: { ...DEFAULT_CUSTOM_THEME_COLORS },
+    });
+  };
+
+  const customTokens = deriveCustomThemeTokens(customColors);
+
   // Persiste el conjunto de secciones desplegadas ante cada cambio
   useEffect(() => {
     saveSettingsOpenSections(openSections);
@@ -289,12 +382,14 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const boardPalette = getEffectiveBoardColors(
     settings.theme,
     settings.canvasBgMode,
-    settings.canvasBgCustomColor
+    settings.canvasBgCustomColor,
+    customColors
   );
   const effectivePalette = getThemeCursorPalette(
     settings.theme,
     settings.cursorColor,
-    boardPalette.isDarkSurface
+    boardPalette.isDarkSurface,
+    customColors
   );
   const pickerHex =
     settings.cursorColor === 'auto' ? effectivePalette.fill : settings.cursorColor;
@@ -303,21 +398,24 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     'default',
     settings.cursorSize,
     settings.cursorColor,
-    boardPalette.isDarkSurface
+    boardPalette.isDarkSurface,
+    customColors
   );
   const crosshairPreview = buildCursorSvg(
     settings.theme,
     'crosshair',
     settings.cursorSize,
     settings.cursorColor,
-    boardPalette.isDarkSurface
+    boardPalette.isDarkSurface,
+    customColors
   );
   const livePreviewCursor = getContrastCanvasCursor(
     settings.theme,
     'default',
     settings.cursorSize,
     settings.cursorColor,
-    boardPalette.isDarkSurface
+    boardPalette.isDarkSurface,
+    customColors
   );
 
   // Desplaza suavemente la vista interna del modal si la sección abierta queda fuera del área visible
@@ -410,55 +508,216 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             icon={<Palette className="w-4 h-4" />}
             isOpen={openSections.includes('appearance')}
             onToggle={toggleSection}
-            onReset={() => onUpdateSettings({ ...settings, theme: 'light' })}
+            onReset={() =>
+              onUpdateSettings({
+                ...settings,
+                theme: 'light',
+                customThemeColors: { ...DEFAULT_CUSTOM_THEME_COLORS },
+              })
+            }
             sectionRef={(el) => {
               sectionRefs.current.appearance = el;
             }}
           >
-            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2.5">
-              {THEME_OPTIONS.map((opt) => {
-                const isSelected = settings.theme === opt.id;
-                return (
-                  <button
-                    key={opt.id}
-                    type="button"
-                    onClick={() => onUpdateSettings({ ...settings, theme: opt.id })}
-                    className={`relative flex flex-col gap-2 p-3 rounded-xl border text-left transition-all ${
-                      isSelected
-                        ? 'theme-accent-soft border-current ring-2 ring-current/40'
-                        : 'theme-border hover:bg-black/5 dark:hover:bg-white/10'
-                    }`}
-                  >
-                    <div className="flex items-center justify-between gap-2">
-                      <div className="flex items-center gap-1.5">
-                        {opt.id === 'light' ? (
-                          <Sun className="w-3.5 h-3.5" />
-                        ) : opt.id === 'dark' ? (
-                          <Moon className="w-3.5 h-3.5" />
-                        ) : (
-                          <Palette className="w-3.5 h-3.5" />
-                        )}
-                        <span className="text-xs font-semibold">{opt.name}</span>
+            <div className="space-y-3.5">
+              <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2.5">
+                {THEME_OPTIONS.map((opt) => {
+                  const isSelected = settings.theme === opt.id;
+                  const swatches: [string, string, string] =
+                    opt.id === 'custom'
+                      ? [
+                          customColors.background,
+                          customColors.accent,
+                          customColors.text,
+                        ]
+                      : opt.swatches;
+                  return (
+                    <button
+                      key={opt.id}
+                      type="button"
+                      onClick={() =>
+                        onUpdateSettings({
+                          ...settings,
+                          theme: opt.id,
+                          ...(opt.id === 'custom'
+                            ? { customThemeColors: customColors }
+                            : {}),
+                        })
+                      }
+                      className={`relative flex flex-col gap-2 p-3 rounded-xl border text-left transition-all ${
+                        isSelected
+                          ? 'theme-accent-soft border-current ring-2 ring-current/40'
+                          : 'theme-border hover:bg-black/5 dark:hover:bg-white/10'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="flex items-center gap-1.5">
+                          {opt.id === 'light' ? (
+                            <Sun className="w-3.5 h-3.5" />
+                          ) : opt.id === 'dark' ? (
+                            <Moon className="w-3.5 h-3.5" />
+                          ) : (
+                            <Palette className="w-3.5 h-3.5" />
+                          )}
+                          <span className="text-xs font-semibold">{opt.name}</span>
+                        </div>
+                        {isSelected && <Check className="w-3.5 h-3.5 shrink-0" />}
                       </div>
-                      {isSelected && <Check className="w-3.5 h-3.5 shrink-0" />}
-                    </div>
 
-                    <div className="flex items-center gap-1.5">
-                      {opt.swatches.map((hex, i) => (
-                        <span
-                          key={i}
-                          className="w-6 h-4 rounded border border-black/15"
-                          style={{ backgroundColor: hex }}
-                        />
-                      ))}
-                    </div>
+                      <div className="flex items-center gap-1.5">
+                        {swatches.map((hex, i) => (
+                          <span
+                            key={i}
+                            className="w-6 h-4 rounded border border-black/15"
+                            style={{ backgroundColor: hex }}
+                          />
+                        ))}
+                      </div>
 
-                    <span className="text-[11px] opacity-75 leading-tight">
-                      {opt.subtitle}
-                    </span>
+                      <span className="text-[11px] opacity-75 leading-tight">
+                        {opt.subtitle}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+
+              {/* V1.11.8-14: Selectores en vivo para el tema Personalizado (Fondo, Acento, Texto) */}
+              <div
+                data-custom-theme-editor="true"
+                className={`rounded-xl border p-3.5 space-y-3 transition-colors ${
+                  settings.theme === 'custom'
+                    ? 'theme-surface-alt theme-border ring-1 ring-current/25'
+                    : 'theme-border opacity-90'
+                }`}
+              >
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <div className="text-xs font-semibold flex items-center gap-1.5">
+                      <span>Colores del tema Personalizado</span>
+                      {settings.theme === 'custom' && (
+                        <span className="px-1.5 py-0.5 rounded text-[10px] font-medium theme-accent-soft">
+                          Activo
+                        </span>
+                      )}
+                    </div>
+                    <p className="text-[11px] opacity-70">
+                      Elige 3 colores; los paneles, bordes y estados hover se generan automáticamente con contraste legible.
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={resetCustomThemeColors}
+                    className="inline-flex items-center gap-1 text-[11px] font-medium px-2.5 py-1 rounded-md border theme-border theme-surface hover:bg-black/5 dark:hover:bg-white/10 transition-colors"
+                  >
+                    <RotateCcw className="w-3 h-3" />
+                    Restablecer valores por defecto
                   </button>
-                );
-              })}
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+                  {(
+                    [
+                      { key: 'background', label: 'Fondo' },
+                      { key: 'accent', label: 'Acento' },
+                      { key: 'text', label: 'Texto' },
+                    ] as const
+                  ).map((item) => {
+                    const selectedHex = customColors[item.key].toLowerCase();
+                    const palette = CUSTOM_THEME_PALETTES_12[item.key];
+                    return (
+                      <div
+                        key={item.key}
+                        className="p-2.5 rounded-lg border theme-border theme-surface space-y-2"
+                      >
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-xs font-medium">{item.label}</span>
+                          <span className="inline-flex items-center gap-1.5 text-[10px] font-mono-tabular opacity-75 uppercase">
+                            <span
+                              className="w-3 h-3 rounded-sm border border-black/20"
+                              style={{ backgroundColor: customColors[item.key] }}
+                            />
+                            {customColors[item.key]}
+                          </span>
+                        </div>
+                        <div
+                          className="grid grid-cols-6 gap-1.5"
+                          role="radiogroup"
+                          aria-label={`Paleta de 12 colores para ${item.label} del tema Personalizado`}
+                        >
+                          {palette.map((swatch) => {
+                            const isSwatchActive = swatch.hex.toLowerCase() === selectedHex;
+                            const lum = getHexRelativeLuminance(swatch.hex) ?? 0.5;
+                            const checkTone = lum > 0.42 ? 'text-slate-900' : 'text-white';
+                            return (
+                              <button
+                                key={swatch.hex}
+                                type="button"
+                                role="radio"
+                                aria-checked={isSwatchActive}
+                                title={`${swatch.label} (${swatch.hex.toUpperCase()})`}
+                                aria-label={`${item.label}: ${swatch.label}`}
+                                onClick={() => selectCustomThemeColor(item.key, swatch.hex)}
+                                className={`h-6 w-full rounded-md border flex items-center justify-center transition-transform ${
+                                  isSwatchActive
+                                    ? 'ring-2 ring-blue-500 ring-offset-1 scale-105 border-white/80'
+                                    : 'border-black/20 hover:scale-105'
+                                }`}
+                                style={{ backgroundColor: swatch.hex }}
+                              >
+                                {isSwatchActive && (
+                                  <Check className={`w-3.5 h-3.5 stroke-[2.75] ${checkTone}`} />
+                                )}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                {/* Validación WCAG de contraste legible en vivo */}
+                <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t theme-border text-[11px]">
+                  <div className="flex items-center gap-2">
+                    <span className="opacity-75">Contraste efectivo (WCAG):</span>
+                    <span className="font-mono-tabular font-semibold px-1.5 py-0.5 rounded theme-surface border theme-border">
+                      {customTokens.finalContrastRatio.toFixed(2)}:1
+                    </span>
+                    {customTokens.textAdjusted || customTokens.accentTextAdjusted ? (
+                      <span className="inline-flex items-center gap-1 text-amber-600 dark:text-amber-300 font-medium">
+                        <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+                        Tono ajustado automáticamente para garantizar legibilidad
+                      </span>
+                    ) : (
+                      <span className="inline-flex items-center gap-1 text-emerald-600 dark:text-emerald-400 font-medium">
+                        <Check className="w-3.5 h-3.5 shrink-0" />
+                        Contraste legible (AA)
+                      </span>
+                    )}
+                  </div>
+                  {/* Muestra rápida de superficie + texto + botón acento derivados */}
+                  <div
+                    className="flex items-center gap-1.5 px-2 py-1 rounded-md border"
+                    style={{
+                      backgroundColor: customTokens.cssVars['--ui-surface'],
+                      borderColor: customTokens.cssVars['--ui-border'],
+                      color: customTokens.cssVars['--ui-text'],
+                    }}
+                  >
+                    <span className="text-[10px] font-medium">Panel</span>
+                    <span
+                      className="px-1.5 py-0.5 rounded text-[10px] font-semibold"
+                      style={{
+                        backgroundColor: customTokens.cssVars['--ui-accent'],
+                        color: customTokens.cssVars['--ui-accent-btn-text'],
+                      }}
+                    >
+                      Botón
+                    </span>
+                  </div>
+                </div>
+              </div>
             </div>
           </SettingsAccordionSection>
 
@@ -483,6 +742,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
           >
             <CanvasColorPickerControl
               theme={settings.theme}
+              customThemeColors={customColors}
               mode={settings.canvasBgMode}
               customColor={settings.canvasBgCustomColor}
               adaptStrokeColors={settings.adaptStrokeColorsToCanvasBg}
@@ -778,15 +1038,18 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 </div>
                 <input
                   type="number"
-                  min={12}
-                  max={80}
+                  min={8}
+                  max={100}
                   value={settings.defaultGridSize}
-                  onChange={(e) =>
+                  onChange={(e) => {
+                    const parsed = Number(e.target.value);
                     onUpdateSettings({
                       ...settings,
-                      defaultGridSize: Math.max(12, Math.min(80, Number(e.target.value))),
-                    })
-                  }
+                      defaultGridSize: Number.isFinite(parsed)
+                        ? Math.max(8, Math.min(100, Math.round(parsed)))
+                        : 28,
+                    });
+                  }}
                   className="w-20 rounded border theme-border theme-surface px-2.5 py-1 text-xs font-mono-tabular"
                 />
               </div>

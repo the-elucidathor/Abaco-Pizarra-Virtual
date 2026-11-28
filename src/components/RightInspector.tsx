@@ -56,6 +56,7 @@ import type {
   StrokeObject,
   StrokeStyle,
   TableObject,
+  TextFontFamily,
   TextObject,
   ToolId,
   ToolOptions,
@@ -68,9 +69,14 @@ import {
   normalizarTabla,
   removeTableCol,
   removeTableRow,
+  scaleTableToDimensions,
 } from '../utils/tableUtils';
 import type { CadDraftingConfig, CadLinearDimAxis } from '../types/cad';
-import { computeDimensionMetrics } from '../utils/cad/cadDimensions';
+import {
+  computeDimensionMetrics,
+  getDimensionLineOffset,
+  withDimensionLineOffset,
+} from '../utils/cad/cadDimensions';
 import {
   ensureGroupsArray,
   getGroupMemberObjects,
@@ -81,7 +87,7 @@ import {
   rotateCanvasObjectAroundPivot,
   scaleCanvasObjectInBox,
 } from '../utils/cad/cadTransform';
-import { TEXT_FONT_OPTIONS } from '../utils/textFonts';
+import { TEXT_FONT_OPTIONS, getTextFontCss } from '../utils/textFonts';
 import {
   BOARD_SIZE_PRESETS,
   MAX_FRAME_MARGIN_MM,
@@ -93,6 +99,7 @@ import {
   resolveBoardDimensions,
 } from '../utils/boardSizes';
 import { CanvasColorPickerControl } from './CanvasColorPickerControl';
+import { ColorSwatchPicker } from './ColorSwatchPicker';
 import { FontSizeInput } from './FontSizeInput';
 import type { RichTextEditorHandle } from './RichTextEditor';
 import type { SpellcheckLanguage, TextAlign } from '../types/whiteboard';
@@ -127,7 +134,12 @@ interface RightInspectorProps {
   onUpdateSettings: (next: AppSettings) => void;
   onUpdateToolOptions: (patch: Partial<ToolOptions>) => void;
   onUpdateBoardMeta: (patch: Partial<Board>) => void;
-  onUpdateObjects: (ids: string[], updater: (obj: CanvasObject) => CanvasObject) => void;
+  onUpdateObjects: (
+    ids: string[],
+    updater: (obj: CanvasObject) => CanvasObject,
+    recordHistory?: boolean
+  ) => void;
+  onPushHistorySnapshot?: (snapshotObjects: CanvasObject[]) => void;
   onSelectIds: (ids: string[]) => void;
   onStartEditingText: (id: string) => void;
   onDeleteSelected: () => void;
@@ -191,6 +203,66 @@ export const RightInspector: React.FC<RightInspectorProps> = React.memo((props) 
   const [groupNameDraft, setGroupNameDraft] = useState('');
   const [groupRotInput, setGroupRotInput] = useState('15');
   const [marginDraft, setMarginDraft] = useState<string | null>(null);
+  const [gridSizeDraft, setGridSizeDraft] = useState<string | null>(null);
+  const [tableWidthDraft, setTableWidthDraft] = useState<string | null>(null);
+  const [tableHeightDraft, setTableHeightDraft] = useState<string | null>(null);
+  const tableDimSnapRef = React.useRef<CanvasObject[] | null>(null);
+  // V1.11.8-8: Instantáneas previas al arrastre de color o grosor para 1 sola entrada en historial
+  const colorPreviewSnapRef = React.useRef<CanvasObject[] | null>(null);
+  const strokeWidthSnapRef = React.useRef<CanvasObject[] | null>(null);
+
+  const updateCustomSwatches = (next: string[]) => {
+    try {
+      props.onUpdateSettings({
+        ...props.settings,
+        customColorSwatches: next,
+      });
+    } catch {
+      // noop
+    }
+  };
+
+  const startObjectColorPreview = () => {
+    try {
+      colorPreviewSnapRef.current = props.board.objects;
+    } catch {
+      colorPreviewSnapRef.current = null;
+    }
+  };
+
+  const cancelObjectColorPreview = () => {
+    try {
+      const snap = colorPreviewSnapRef.current;
+      colorPreviewSnapRef.current = null;
+      if (!snap) return;
+      const snapMap = new Map(snap.map((o) => [o.id, o]));
+      props.onUpdateObjects(
+        snap.map((o) => o.id),
+        (o) => snapMap.get(o.id) ?? o,
+        false
+      );
+    } catch {
+      // noop
+    }
+  };
+
+  const commitObjectColorWithPreview = (
+    ids: string[],
+    updater: (obj: CanvasObject) => CanvasObject
+  ) => {
+    try {
+      const snap = colorPreviewSnapRef.current;
+      colorPreviewSnapRef.current = null;
+      if (snap && props.onPushHistorySnapshot) {
+        props.onPushHistorySnapshot(snap);
+        props.onUpdateObjects(ids, updater, false);
+      } else {
+        props.onUpdateObjects(ids, updater, true);
+      }
+    } catch {
+      props.onUpdateObjects(ids, updater, true);
+    }
+  };
 
   if (props.collapsed) {
     return (
@@ -327,31 +399,17 @@ export const RightInspector: React.FC<RightInspectorProps> = React.memo((props) 
                   </div>
                 ) : (
                   <>
-                    <div>
-                      <label className="block text-slate-600 dark:text-slate-400 mb-1.5">
-                        Color del trazo
-                      </label>
-                      <div className="flex flex-wrap items-center gap-1.5">
-                        {COLOR_SWATCHES.slice(0, 7).map((c) => (
-                          <button
-                            key={c}
-                            type="button"
-                            onClick={() => props.onUpdateToolOptions({ penColor: c })}
-                            className={`w-6 h-6 rounded-full border-2 ${
-                              props.toolOptions.penColor === c
-                                ? 'border-blue-600 scale-110'
-                                : 'border-slate-300 dark:border-slate-600'
-                            }`}
-                            style={{ backgroundColor: c }}
-                          />
-                        ))}
-                        <input
-                          type="color"
-                          value={props.toolOptions.penColor}
-                          onChange={(e) => props.onUpdateToolOptions({ penColor: e.target.value })}
-                          className="w-6 h-6 rounded border border-slate-300 cursor-pointer"
-                        />
-                      </div>
+                    {/* V1.11.8-5: Paleta rápida 18 + 4 personalizados para herramienta lápiz */}
+                    <div className="flex items-center justify-between">
+                      <span className="text-slate-600 dark:text-slate-400">Color del trazo</span>
+                      <ColorSwatchPicker
+                        value={props.toolOptions.penColor}
+                        customSwatches={props.settings.customColorSwatches}
+                        onUpdateCustomSwatches={updateCustomSwatches}
+                        onPreviewColor={(c) => props.onUpdateToolOptions({ penColor: c })}
+                        onCommitColor={(c) => props.onUpdateToolOptions({ penColor: c })}
+                        title="Color del trazo"
+                      />
                     </div>
 
                     <div>
@@ -447,13 +505,13 @@ export const RightInspector: React.FC<RightInspectorProps> = React.memo((props) 
                 </div>
                 <div className="flex items-center justify-between">
                   <span className="text-slate-600 dark:text-slate-400">Color de contorno</span>
-                  <input
-                    type="color"
+                  <ColorSwatchPicker
                     value={props.toolOptions.shapeStrokeColor}
-                    onChange={(e) =>
-                      props.onUpdateToolOptions({ shapeStrokeColor: e.target.value })
-                    }
-                    className="w-7 h-7 rounded border border-slate-300 cursor-pointer"
+                    customSwatches={props.settings.customColorSwatches}
+                    onUpdateCustomSwatches={updateCustomSwatches}
+                    onPreviewColor={(c) => props.onUpdateToolOptions({ shapeStrokeColor: c })}
+                    onCommitColor={(c) => props.onUpdateToolOptions({ shapeStrokeColor: c })}
+                    title="Color de contorno"
                   />
                 </div>
                 {props.activeTool === 'shape' && (
@@ -474,17 +532,15 @@ export const RightInspector: React.FC<RightInspectorProps> = React.memo((props) 
                         >
                           Sin relleno
                         </button>
-                        <input
-                          type="color"
-                          value={
-                            props.toolOptions.shapeFillColor === 'transparent'
-                              ? '#e0f2fe'
-                              : props.toolOptions.shapeFillColor
-                          }
-                          onChange={(e) =>
-                            props.onUpdateToolOptions({ shapeFillColor: e.target.value })
-                          }
-                          className="w-7 h-7 rounded border border-slate-300 cursor-pointer"
+                        <ColorSwatchPicker
+                          compact
+                          allowTransparent
+                          value={props.toolOptions.shapeFillColor}
+                          customSwatches={props.settings.customColorSwatches}
+                          onUpdateCustomSwatches={updateCustomSwatches}
+                          onPreviewColor={(c) => props.onUpdateToolOptions({ shapeFillColor: c })}
+                          onCommitColor={(c) => props.onUpdateToolOptions({ shapeFillColor: c })}
+                          title="Color de relleno"
                         />
                       </div>
                     </div>
@@ -565,7 +621,7 @@ export const RightInspector: React.FC<RightInspectorProps> = React.memo((props) 
                   </div>
                 </div>
 
-                {/* Single Object Geometry */}
+                {/* Single Object Geometry (V1.11.8-2: traslación real de puntos para cotas) */}
                 {single && (
                   <div className="grid grid-cols-2 gap-2">
                     <div>
@@ -573,12 +629,22 @@ export const RightInspector: React.FC<RightInspectorProps> = React.memo((props) 
                       <input
                         type="number"
                         value={Math.round(single.x)}
-                        onChange={(e) =>
+                        onChange={(e) => {
+                          const nextX = Number(e.target.value);
+                          if (!Number.isFinite(nextX)) return;
+                          if (single.type === 'dimension') {
+                            const dx = nextX - single.x;
+                            if (Math.abs(dx) < 1e-4) return;
+                            props.onUpdateObjects([single.id], (o) =>
+                              translateCanvasObject(o, dx, 0)
+                            );
+                            return;
+                          }
                           props.onUpdateObjects([single.id], (o) => ({
                             ...o,
-                            x: Number(e.target.value),
-                          }))
-                        }
+                            x: nextX,
+                          }));
+                        }}
                         className="w-full rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 px-2 py-1 font-mono-tabular"
                       />
                     </div>
@@ -587,12 +653,22 @@ export const RightInspector: React.FC<RightInspectorProps> = React.memo((props) 
                       <input
                         type="number"
                         value={Math.round(single.y)}
-                        onChange={(e) =>
+                        onChange={(e) => {
+                          const nextY = Number(e.target.value);
+                          if (!Number.isFinite(nextY)) return;
+                          if (single.type === 'dimension') {
+                            const dy = nextY - single.y;
+                            if (Math.abs(dy) < 1e-4) return;
+                            props.onUpdateObjects([single.id], (o) =>
+                              translateCanvasObject(o, 0, dy)
+                            );
+                            return;
+                          }
                           props.onUpdateObjects([single.id], (o) => ({
                             ...o,
-                            y: Number(e.target.value),
-                          }))
-                        }
+                            y: nextY,
+                          }));
+                        }}
                         className="w-full rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 px-2 py-1 font-mono-tabular"
                       />
                     </div>
@@ -600,36 +676,198 @@ export const RightInspector: React.FC<RightInspectorProps> = React.memo((props) 
                       <label className="block text-[10px] text-slate-500 mb-0.5">Ancho</label>
                       <input
                         type="number"
-                        min={10}
-                        value={Math.round(single.width)}
-                        onChange={(e) =>
+                        min={single.type === 'table' ? 40 : 10}
+                        disabled={single.type === 'dimension'}
+                        title={
+                          single.type === 'dimension'
+                            ? 'Calculado automáticamente por los puntos de la cota'
+                            : single.type === 'table'
+                            ? 'Ancho total de tabla (mínimo compacto 40 px)'
+                            : undefined
+                        }
+                        value={
+                          single.type === 'table' && tableWidthDraft !== null
+                            ? tableWidthDraft
+                            : Math.round(single.width)
+                        }
+                        onFocus={() => {
+                          if (single.type === 'table') {
+                            tableDimSnapRef.current = props.board.objects;
+                          }
+                        }}
+                        onChange={(e) => {
+                          const raw = e.target.value;
+                          if (single.type === 'table') {
+                            setTableWidthDraft(raw);
+                            if (raw.trim() === '') return;
+                            const num = Number(raw);
+                            if (!Number.isFinite(num) || num < 40) return;
+                            // V1.11.8-16: Escala proporcionalmente columnas sin bloquear compactación
+                            props.onUpdateObjects(
+                              [single.id],
+                              (o) =>
+                                scaleTableToDimensions(
+                                  o as TableObject,
+                                  Math.max(40, Math.round(num)),
+                                  (o as TableObject).height
+                                ),
+                              false
+                            );
+                            return;
+                          }
                           props.onUpdateObjects([single.id], (o) => ({
                             ...o,
-                            width: Math.max(10, Number(e.target.value)),
-                          }))
-                        }
-                        className="w-full rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 px-2 py-1 font-mono-tabular"
+                            width: Math.max(10, Number(raw)),
+                          }));
+                        }}
+                        onBlur={() => {
+                          if (single.type !== 'table') return;
+                          const raw = tableWidthDraft;
+                          setTableWidthDraft(null);
+                          const snap = tableDimSnapRef.current;
+                          tableDimSnapRef.current = null;
+                          if (raw !== null && raw.trim() !== '') {
+                            const num = Number(raw);
+                            const finalW = Number.isFinite(num)
+                              ? Math.max(40, Math.round(num))
+                              : single.width;
+                            if (snap && props.onPushHistorySnapshot) {
+                              props.onPushHistorySnapshot(snap);
+                              props.onUpdateObjects(
+                                [single.id],
+                                (o) =>
+                                  scaleTableToDimensions(
+                                    o as TableObject,
+                                    finalW,
+                                    (o as TableObject).height
+                                  ),
+                                false
+                              );
+                            } else {
+                              props.onUpdateObjects(
+                                [single.id],
+                                (o) =>
+                                  scaleTableToDimensions(
+                                    o as TableObject,
+                                    finalW,
+                                    (o as TableObject).height
+                                  ),
+                                true
+                              );
+                            }
+                          }
+                        }}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter' && single.type === 'table') {
+                            (e.currentTarget as HTMLInputElement).blur();
+                          }
+                        }}
+                        className="w-full rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 px-2 py-1 font-mono-tabular disabled:opacity-50"
                       />
                     </div>
                     <div>
                       <label className="block text-[10px] text-slate-500 mb-0.5">Alto</label>
                       <input
                         type="number"
-                        min={10}
-                        value={Math.round(single.height)}
-                        onChange={(e) =>
+                        min={single.type === 'table' ? 40 : 10}
+                        disabled={single.type === 'dimension'}
+                        title={
+                          single.type === 'dimension'
+                            ? 'Calculado automáticamente por los puntos de la cota'
+                            : single.type === 'table'
+                            ? 'Alto total de tabla (mínimo compacto 40 px)'
+                            : undefined
+                        }
+                        value={
+                          single.type === 'table' && tableHeightDraft !== null
+                            ? tableHeightDraft
+                            : Math.round(single.height)
+                        }
+                        onFocus={() => {
+                          if (single.type === 'table') {
+                            tableDimSnapRef.current = props.board.objects;
+                          }
+                        }}
+                        onChange={(e) => {
+                          const raw = e.target.value;
+                          if (single.type === 'table') {
+                            setTableHeightDraft(raw);
+                            if (raw.trim() === '') return;
+                            const num = Number(raw);
+                            if (!Number.isFinite(num) || num < 40) return;
+                            // V1.11.8-16: Escala proporcionalmente filas sin bloquear compactación
+                            props.onUpdateObjects(
+                              [single.id],
+                              (o) =>
+                                scaleTableToDimensions(
+                                  o as TableObject,
+                                  (o as TableObject).width,
+                                  Math.max(40, Math.round(num))
+                                ),
+                              false
+                            );
+                            return;
+                          }
                           props.onUpdateObjects([single.id], (o) => ({
                             ...o,
-                            height: Math.max(10, Number(e.target.value)),
-                          }))
-                        }
-                        className="w-full rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 px-2 py-1 font-mono-tabular"
+                            height: Math.max(10, Number(raw)),
+                          }));
+                        }}
+                        onBlur={() => {
+                          if (single.type !== 'table') return;
+                          const raw = tableHeightDraft;
+                          setTableHeightDraft(null);
+                          const snap = tableDimSnapRef.current;
+                          tableDimSnapRef.current = null;
+                          if (raw !== null && raw.trim() !== '') {
+                            const num = Number(raw);
+                            const finalH = Number.isFinite(num)
+                              ? Math.max(40, Math.round(num))
+                              : single.height;
+                            if (snap && props.onPushHistorySnapshot) {
+                              props.onPushHistorySnapshot(snap);
+                              props.onUpdateObjects(
+                                [single.id],
+                                (o) =>
+                                  scaleTableToDimensions(
+                                    o as TableObject,
+                                    (o as TableObject).width,
+                                    finalH
+                                  ),
+                                false
+                              );
+                            } else {
+                              props.onUpdateObjects(
+                                [single.id],
+                                (o) =>
+                                  scaleTableToDimensions(
+                                    o as TableObject,
+                                    (o as TableObject).width,
+                                    finalH
+                                  ),
+                                true
+                              );
+                            }
+                          }
+                        }}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter' && single.type === 'table') {
+                            (e.currentTarget as HTMLInputElement).blur();
+                          }
+                        }}
+                        className="w-full rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 px-2 py-1 font-mono-tabular disabled:opacity-50"
                       />
                     </div>
                     <div>
                       <label className="block text-[10px] text-slate-500 mb-0.5">Rotación (°)</label>
                       <input
                         type="number"
+                        disabled={single.type === 'dimension'}
+                        title={
+                          single.type === 'dimension'
+                            ? 'La orientación depende de los puntos de la cota'
+                            : undefined
+                        }
                         value={Math.round(single.rotation)}
                         onChange={(e) =>
                           props.onUpdateObjects([single.id], (o) => ({
@@ -637,7 +875,7 @@ export const RightInspector: React.FC<RightInspectorProps> = React.memo((props) 
                             rotation: Number(e.target.value),
                           }))
                         }
-                        className="w-full rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 px-2 py-1 font-mono-tabular"
+                        className="w-full rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 px-2 py-1 font-mono-tabular disabled:opacity-50"
                       />
                     </div>
                     <div>
@@ -823,6 +1061,499 @@ export const RightInspector: React.FC<RightInspectorProps> = React.memo((props) 
                         Desagrupar
                       </button>
                     </div>
+
+                    {/* V1.11.8-3: Propiedades comunes aplicables en selección múltiple */}
+                    {(() => {
+                      const multiTargets =
+                        unlockedSelectedIds.length > 0
+                          ? props.selectedObjects.filter((o) => !o.locked)
+                          : props.selectedObjects;
+                      const multiDisabled = unlockedSelectedIds.length === 0;
+
+                      const resolveUniform = <T,>(
+                        vals: (T | 'mixed')[],
+                        normalize?: (v: T) => string | number
+                      ): T | 'mixed' => {
+                        if (vals.length === 0) return 'mixed';
+                        const first = vals[0];
+                        if (first === 'mixed') return 'mixed';
+                        const firstKey = normalize ? normalize(first) : first;
+                        for (let i = 1; i < vals.length; i++) {
+                          const v = vals[i];
+                          if (v === 'mixed') return 'mixed';
+                          const k = normalize ? normalize(v) : v;
+                          if (k !== firstKey) return 'mixed';
+                        }
+                        return first;
+                      };
+
+                      const strokeObjs = multiTargets.filter(
+                        (o) =>
+                          o.type === 'shape' ||
+                          o.type === 'line' ||
+                          o.type === 'stroke' ||
+                          o.type === 'dimension' ||
+                          o.type === 'table'
+                      );
+                      const strokeIds = strokeObjs.map((o) => o.id);
+                      const commonStrokeColor = resolveUniform<string>(
+                        strokeObjs.map((o) => {
+                          if (o.type === 'shape' || o.type === 'line' || o.type === 'dimension') {
+                            return o.strokeColor;
+                          }
+                          if (o.type === 'stroke') return o.color;
+                          return o.borderColor ?? o.color ?? '#0f172a';
+                        }),
+                        (v) => v.trim().toLowerCase()
+                      );
+                      const applyMultiStrokeColor = (color: string, recordHistory = true) => {
+                        try {
+                          props.onUpdateObjects(
+                            strokeIds,
+                            (o) => {
+                              if (o.type === 'shape' || o.type === 'line' || o.type === 'dimension') {
+                                return { ...o, strokeColor: color };
+                              }
+                              if (o.type === 'stroke') return { ...o, color };
+                              if (o.type === 'table') return { ...o, borderColor: color };
+                              return o;
+                            },
+                            recordHistory
+                          );
+                        } catch {
+                          // noop
+                        }
+                      };
+
+                      const fillObjs = multiTargets.filter(
+                        (o) =>
+                          o.type === 'shape' ||
+                          o.type === 'sticky' ||
+                          o.type === 'equation' ||
+                          o.type === 'graph' ||
+                          o.type === 'text'
+                      );
+                      const fillIds = fillObjs.map((o) => o.id);
+                      const commonFillColor = resolveUniform<string>(
+                        fillObjs.map((o) =>
+                          o.type === 'shape' ? o.fillColor : o.backgroundColor
+                        ),
+                        (v) => v.trim().toLowerCase()
+                      );
+                      const applyMultiFillColor = (color: string, recordHistory = true) => {
+                        try {
+                          props.onUpdateObjects(
+                            fillIds,
+                            (o) => {
+                              if (o.type === 'shape') return { ...o, fillColor: color };
+                              if (
+                                o.type === 'sticky' ||
+                                o.type === 'equation' ||
+                                o.type === 'graph' ||
+                                o.type === 'text'
+                              ) {
+                                return { ...o, backgroundColor: color };
+                              }
+                              return o;
+                            },
+                            recordHistory
+                          );
+                        } catch {
+                          // noop
+                        }
+                      };
+
+                      const textColorObjs = multiTargets.filter(
+                        (o) =>
+                          o.type === 'text' ||
+                          o.type === 'sticky' ||
+                          o.type === 'equation' ||
+                          o.type === 'dimension' ||
+                          o.type === 'table'
+                      );
+                      const textColorIds = textColorObjs.map((o) => o.id);
+                      const commonTextColor = resolveUniform<string>(
+                        textColorObjs.map((o) => {
+                          if (o.type === 'text') {
+                            const d = getDefaultRunStyle(o);
+                            const p = ensureTextParagraphs(o);
+                            const s = getSelectionStyleSummary(
+                              p,
+                              { start: 0, end: (o.content ?? '').length },
+                              null,
+                              d
+                            );
+                            return s.color;
+                          }
+                          if (o.type === 'sticky' || o.type === 'dimension') return o.textColor;
+                          if (o.type === 'equation') return o.color;
+                          return o.color ?? '#0f172a';
+                        }),
+                        (v) => v.trim().toLowerCase()
+                      );
+                      const applyMultiTextColor = (color: string, recordHistory = true) => {
+                        try {
+                          props.onUpdateObjects(
+                            textColorIds,
+                            (o) => {
+                              if (o.type === 'text') {
+                                const nextP = applyStyleToAllParagraphs(
+                                  ensureTextParagraphs(o),
+                                  { color },
+                                  getDefaultRunStyle(o)
+                                );
+                                return syncTextObjectFromParagraphs(o, nextP);
+                              }
+                              if (o.type === 'sticky' || o.type === 'dimension') {
+                                return { ...o, textColor: color };
+                              }
+                              if (o.type === 'equation' || o.type === 'table') {
+                                return { ...o, color };
+                              }
+                              return o;
+                            },
+                            recordHistory
+                          );
+                        } catch {
+                          // noop
+                        }
+                      };
+
+                      const widthObjs = multiTargets.filter(
+                        (o) => o.type === 'shape' || o.type === 'line' || o.type === 'stroke'
+                      );
+                      const widthIds = widthObjs.map((o) => o.id);
+                      const commonWidth = resolveUniform<number>(
+                        widthObjs.map((o) => o.strokeWidth),
+                        (v) => Math.round(v * 10) / 10
+                      );
+                      const applyMultiWidth = (w: number, recordHistory = true) => {
+                        try {
+                          const clampedW = Math.max(1, Math.min(36, w));
+                          props.onUpdateObjects(
+                            widthIds,
+                            (o) =>
+                              o.type === 'shape' || o.type === 'line' || o.type === 'stroke'
+                                ? { ...o, strokeWidth: clampedW }
+                                : o,
+                            recordHistory
+                          );
+                        } catch {
+                          // noop
+                        }
+                      };
+
+                      const fontObjs = multiTargets.filter(
+                        (o) => o.type === 'text' || o.type === 'table' || o.type === 'dimension'
+                      );
+                      const fontIds = fontObjs.map((o) => o.id);
+                      const commonFont = resolveUniform<TextFontFamily>(
+                        fontObjs.map((o) => {
+                          if (o.type === 'text') {
+                            const d = getDefaultRunStyle(o);
+                            const p = ensureTextParagraphs(o);
+                            return getSelectionStyleSummary(
+                              p,
+                              { start: 0, end: (o.content ?? '').length },
+                              null,
+                              d
+                            ).fontFamily;
+                          }
+                          if (o.type === 'table') return normalizarTabla(o).fontFamily;
+                          return o.fontFamily ?? 'mono';
+                        })
+                      );
+                      const applyMultiFont = (fontFamily: TextFontFamily) => {
+                        try {
+                          props.onUpdateObjects(
+                            fontIds,
+                            (o) => {
+                              if (o.type === 'text') {
+                                const nextP = applyStyleToAllParagraphs(
+                                  ensureTextParagraphs(o),
+                                  { fontFamily },
+                                  getDefaultRunStyle(o)
+                                );
+                                return syncTextObjectFromParagraphs(o, nextP);
+                              }
+                              if (o.type === 'table' || o.type === 'dimension') {
+                                return { ...o, fontFamily };
+                              }
+                              return o;
+                            },
+                            true
+                          );
+                        } catch {
+                          // noop
+                        }
+                      };
+
+                      const sizeObjs = multiTargets.filter(
+                        (o) =>
+                          o.type === 'text' ||
+                          o.type === 'sticky' ||
+                          o.type === 'equation' ||
+                          o.type === 'dimension' ||
+                          o.type === 'table'
+                      );
+                      const sizeIds = sizeObjs.map((o) => o.id);
+                      const commonFontSize = resolveUniform<number>(
+                        sizeObjs.map((o) => {
+                          if (o.type === 'text') {
+                            const d = getDefaultRunStyle(o);
+                            const p = ensureTextParagraphs(o);
+                            const s = getSelectionStyleSummary(
+                              p,
+                              { start: 0, end: (o.content ?? '').length },
+                              null,
+                              d
+                            ).fontSize;
+                            return s === 'mixed' ? 'mixed' : sanitizeStoredFontSize(s, d.fontSize);
+                          }
+                          return sanitizeStoredFontSize(o.fontSize, 12);
+                        }),
+                        (v) => Math.round(v * 10) / 10
+                      );
+                      const applyMultiFontSize = (nextSize: number) => {
+                        try {
+                          const clamped = clampTextFontSize(nextSize);
+                          props.onUpdateObjects(
+                            sizeIds,
+                            (o) => {
+                              if (o.type === 'text') {
+                                const nextP = applyStyleToAllParagraphs(
+                                  ensureTextParagraphs(o),
+                                  { fontSize: clamped },
+                                  getDefaultRunStyle(o)
+                                );
+                                return syncTextObjectFromParagraphs(o, nextP);
+                              }
+                              if (
+                                o.type === 'sticky' ||
+                                o.type === 'equation' ||
+                                o.type === 'dimension' ||
+                                o.type === 'table'
+                              ) {
+                                return { ...o, fontSize: clamped };
+                              }
+                              return o;
+                            },
+                            true
+                          );
+                        } catch {
+                          // noop
+                        }
+                      };
+
+                      if (
+                        strokeObjs.length === 0 &&
+                        fillObjs.length === 0 &&
+                        textColorObjs.length === 0 &&
+                        widthObjs.length === 0 &&
+                        fontObjs.length === 0 &&
+                        sizeObjs.length === 0
+                      ) {
+                        return null;
+                      }
+
+                      return (
+                        <div className="space-y-2.5 pt-2 border-t border-slate-200 dark:border-slate-800">
+                          <div className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">
+                            Propiedades comunes
+                          </div>
+
+                          {strokeObjs.length > 0 && (
+                            <div className="flex items-center justify-between gap-2">
+                              <span className="text-slate-600 dark:text-slate-400">
+                                Color de trazo
+                              </span>
+                              <ColorSwatchPicker
+                                disabled={multiDisabled}
+                                value={commonStrokeColor}
+                                customSwatches={props.settings.customColorSwatches}
+                                onUpdateCustomSwatches={updateCustomSwatches}
+                                onStartPreview={startObjectColorPreview}
+                                onPreviewColor={(c) => applyMultiStrokeColor(c, false)}
+                                onCommitColor={(c) => {
+                                  const snap = colorPreviewSnapRef.current;
+                                  colorPreviewSnapRef.current = null;
+                                  if (snap && props.onPushHistorySnapshot) {
+                                    props.onPushHistorySnapshot(snap);
+                                    applyMultiStrokeColor(c, false);
+                                  } else {
+                                    applyMultiStrokeColor(c, true);
+                                  }
+                                }}
+                                onCancelPreview={cancelObjectColorPreview}
+                                title={
+                                  commonStrokeColor === 'mixed'
+                                    ? 'Colores mixtos — clic para unificar'
+                                    : 'Color de trazo común'
+                                }
+                              />
+                            </div>
+                          )}
+
+                          {fillObjs.length > 0 && (
+                            <div className="flex items-center justify-between gap-2">
+                              <span className="text-slate-600 dark:text-slate-400">
+                                Relleno / fondo
+                              </span>
+                              <ColorSwatchPicker
+                                disabled={multiDisabled}
+                                allowTransparent={fillObjs.some((o) => o.type !== 'sticky')}
+                                value={commonFillColor}
+                                customSwatches={props.settings.customColorSwatches}
+                                onUpdateCustomSwatches={updateCustomSwatches}
+                                onStartPreview={startObjectColorPreview}
+                                onPreviewColor={(c) => applyMultiFillColor(c, false)}
+                                onCommitColor={(c) => {
+                                  const snap = colorPreviewSnapRef.current;
+                                  colorPreviewSnapRef.current = null;
+                                  if (snap && props.onPushHistorySnapshot) {
+                                    props.onPushHistorySnapshot(snap);
+                                    applyMultiFillColor(c, false);
+                                  } else {
+                                    applyMultiFillColor(c, true);
+                                  }
+                                }}
+                                onCancelPreview={cancelObjectColorPreview}
+                                title={
+                                  commonFillColor === 'mixed'
+                                    ? 'Rellenos mixtos — clic para unificar'
+                                    : 'Color de relleno común'
+                                }
+                              />
+                            </div>
+                          )}
+
+                          {textColorObjs.length > 0 && (
+                            <div className="flex items-center justify-between gap-2">
+                              <span className="text-slate-600 dark:text-slate-400">
+                                Color de texto
+                              </span>
+                              <ColorSwatchPicker
+                                disabled={multiDisabled}
+                                value={commonTextColor}
+                                customSwatches={props.settings.customColorSwatches}
+                                onUpdateCustomSwatches={updateCustomSwatches}
+                                onStartPreview={startObjectColorPreview}
+                                onPreviewColor={(c) => applyMultiTextColor(c, false)}
+                                onCommitColor={(c) => {
+                                  const snap = colorPreviewSnapRef.current;
+                                  colorPreviewSnapRef.current = null;
+                                  if (snap && props.onPushHistorySnapshot) {
+                                    props.onPushHistorySnapshot(snap);
+                                    applyMultiTextColor(c, false);
+                                  } else {
+                                    applyMultiTextColor(c, true);
+                                  }
+                                }}
+                                onCancelPreview={cancelObjectColorPreview}
+                                title={
+                                  commonTextColor === 'mixed'
+                                    ? 'Colores de texto mixtos — clic para unificar'
+                                    : 'Color de texto común'
+                                }
+                              />
+                            </div>
+                          )}
+
+                          {widthObjs.length > 0 && (
+                            <div className="space-y-1">
+                              <div className="flex items-center justify-between gap-2">
+                                <span className="text-slate-600 dark:text-slate-400">
+                                  Grosor (px)
+                                </span>
+                                <input
+                                  type="number"
+                                  min={1}
+                                  max={36}
+                                  disabled={multiDisabled}
+                                  value={commonWidth === 'mixed' ? '' : commonWidth}
+                                  placeholder={commonWidth === 'mixed' ? 'Mixto' : undefined}
+                                  onChange={(e) => {
+                                    const n = Number(e.target.value);
+                                    if (Number.isFinite(n)) applyMultiWidth(n, true);
+                                  }}
+                                  className="w-20 rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 px-2 py-1 font-mono-tabular text-xs disabled:opacity-50"
+                                />
+                              </div>
+                              <input
+                                type="range"
+                                min={1}
+                                max={24}
+                                disabled={multiDisabled}
+                                value={commonWidth === 'mixed' ? 3 : Math.min(24, Math.max(1, commonWidth))}
+                                onPointerDown={() => {
+                                  strokeWidthSnapRef.current = props.board.objects;
+                                }}
+                                onChange={(e) => applyMultiWidth(Number(e.target.value), false)}
+                                onPointerUp={() => {
+                                  const snap = strokeWidthSnapRef.current;
+                                  strokeWidthSnapRef.current = null;
+                                  if (snap && props.onPushHistorySnapshot) {
+                                    props.onPushHistorySnapshot(snap);
+                                    props.onUpdateObjects(widthIds, (o) => o, false);
+                                  }
+                                }}
+                                className="w-full accent-blue-600 disabled:opacity-50"
+                              />
+                            </div>
+                          )}
+
+                          {fontObjs.length > 0 && (
+                            <div className="flex items-center justify-between gap-2">
+                              <span className="text-slate-600 dark:text-slate-400">
+                                Tipografía
+                              </span>
+                              <select
+                                disabled={multiDisabled}
+                                value={commonFont === 'mixed' ? '__mixed__' : commonFont}
+                                onChange={(e) => {
+                                  if (e.target.value === '__mixed__') return;
+                                  applyMultiFont(e.target.value as TextFontFamily);
+                                }}
+                                className="max-w-[148px] rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 px-2 py-1 text-xs disabled:opacity-50"
+                              >
+                                {commonFont === 'mixed' && (
+                                  <option value="__mixed__" disabled>
+                                    Mixta
+                                  </option>
+                                )}
+                                {TEXT_FONT_OPTIONS.map((f) => (
+                                  <option key={f.id} value={f.id} style={{ fontFamily: f.css }}>
+                                    {f.label}
+                                  </option>
+                                ))}
+                              </select>
+                            </div>
+                          )}
+
+                          {sizeObjs.length > 0 && (
+                            <div className="flex items-center justify-between gap-2">
+                              <span className="text-slate-600 dark:text-slate-400">
+                                Tamaño de letra (px)
+                              </span>
+                              <div className="w-20">
+                                <FontSizeInput
+                                  variant="inspector"
+                                  min={8}
+                                  max={96}
+                                  value={commonFontSize}
+                                  onCommit={(nextSize) => applyMultiFontSize(nextSize)}
+                                  onStep={(delta) => {
+                                    const base =
+                                      typeof commonFontSize === 'number' ? commonFontSize : 12;
+                                    applyMultiFontSize(stepFontSizeValue(base, delta));
+                                  }}
+                                />
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })()}
                   </div>
                 )}
 
@@ -831,16 +1562,26 @@ export const RightInspector: React.FC<RightInspectorProps> = React.memo((props) 
                   <div className="space-y-3 pt-2 border-t border-slate-200 dark:border-slate-800">
                     <div className="flex items-center justify-between">
                       <span className="text-slate-600 dark:text-slate-400">Color de borde</span>
-                      <input
-                        type="color"
+                      <ColorSwatchPicker
                         value={single.strokeColor}
-                        onChange={(e) =>
-                          props.onUpdateObjects([single.id], (o) => ({
+                        customSwatches={props.settings.customColorSwatches}
+                        onUpdateCustomSwatches={updateCustomSwatches}
+                        onStartPreview={startObjectColorPreview}
+                        onPreviewColor={(c) =>
+                          props.onUpdateObjects(
+                            [single.id],
+                            (o) => ({ ...(o as ShapeObject), strokeColor: c }),
+                            false
+                          )
+                        }
+                        onCommitColor={(c) =>
+                          commitObjectColorWithPreview([single.id], (o) => ({
                             ...(o as ShapeObject),
-                            strokeColor: e.target.value,
+                            strokeColor: c,
                           }))
                         }
-                        className="w-7 h-7 rounded border border-slate-300"
+                        onCancelPreview={cancelObjectColorPreview}
+                        title="Color de borde"
                       />
                     </div>
                     <div className="flex items-center justify-between">
@@ -862,18 +1603,28 @@ export const RightInspector: React.FC<RightInspectorProps> = React.memo((props) 
                         >
                           Ninguno
                         </button>
-                        <input
-                          type="color"
-                          value={
-                            single.fillColor === 'transparent' ? '#e0f2fe' : single.fillColor
+                        <ColorSwatchPicker
+                          compact
+                          allowTransparent
+                          value={single.fillColor}
+                          customSwatches={props.settings.customColorSwatches}
+                          onUpdateCustomSwatches={updateCustomSwatches}
+                          onStartPreview={startObjectColorPreview}
+                          onPreviewColor={(c) =>
+                            props.onUpdateObjects(
+                              [single.id],
+                              (o) => ({ ...(o as ShapeObject), fillColor: c }),
+                              false
+                            )
                           }
-                          onChange={(e) =>
-                            props.onUpdateObjects([single.id], (o) => ({
+                          onCommitColor={(c) =>
+                            commitObjectColorWithPreview([single.id], (o) => ({
                               ...(o as ShapeObject),
-                              fillColor: e.target.value,
+                              fillColor: c,
                             }))
                           }
-                          className="w-7 h-7 rounded border border-slate-300"
+                          onCancelPreview={cancelObjectColorPreview}
+                          title="Color de relleno"
                         />
                       </div>
                     </div>
@@ -1034,16 +1785,26 @@ export const RightInspector: React.FC<RightInspectorProps> = React.memo((props) 
                     </div>
                     <div className="flex items-center justify-between">
                       <span className="text-slate-600 dark:text-slate-400">Color</span>
-                      <input
-                        type="color"
+                      <ColorSwatchPicker
                         value={single.strokeColor}
-                        onChange={(e) =>
-                          props.onUpdateObjects([single.id], (o) => ({
+                        customSwatches={props.settings.customColorSwatches}
+                        onUpdateCustomSwatches={updateCustomSwatches}
+                        onStartPreview={startObjectColorPreview}
+                        onPreviewColor={(c) =>
+                          props.onUpdateObjects(
+                            [single.id],
+                            (o) => ({ ...(o as LineObject), strokeColor: c }),
+                            false
+                          )
+                        }
+                        onCommitColor={(c) =>
+                          commitObjectColorWithPreview([single.id], (o) => ({
                             ...(o as LineObject),
-                            strokeColor: e.target.value,
+                            strokeColor: c,
                           }))
                         }
-                        className="w-7 h-7 rounded border border-slate-300"
+                        onCancelPreview={cancelObjectColorPreview}
+                        title="Color de línea"
                       />
                     </div>
                     <div>
@@ -1090,16 +1851,26 @@ export const RightInspector: React.FC<RightInspectorProps> = React.memo((props) 
                   <div className="space-y-3 pt-2 border-t border-slate-200 dark:border-slate-800">
                     <div className="flex items-center justify-between">
                       <span className="text-slate-600 dark:text-slate-400">Color de trazo</span>
-                      <input
-                        type="color"
+                      <ColorSwatchPicker
                         value={single.color}
-                        onChange={(e) =>
-                          props.onUpdateObjects([single.id], (o) => ({
+                        customSwatches={props.settings.customColorSwatches}
+                        onUpdateCustomSwatches={updateCustomSwatches}
+                        onStartPreview={startObjectColorPreview}
+                        onPreviewColor={(c) =>
+                          props.onUpdateObjects(
+                            [single.id],
+                            (o) => ({ ...(o as StrokeObject), color: c }),
+                            false
+                          )
+                        }
+                        onCommitColor={(c) =>
+                          commitObjectColorWithPreview([single.id], (o) => ({
                             ...(o as StrokeObject),
-                            color: e.target.value,
+                            color: c,
                           }))
                         }
-                        className="w-7 h-7 rounded border border-slate-300"
+                        onCancelPreview={cancelObjectColorPreview}
+                        title="Color de trazo"
                       />
                     </div>
                     <div>
@@ -1173,23 +1944,29 @@ export const RightInspector: React.FC<RightInspectorProps> = React.memo((props) 
                   // Aplica formato sobre la selección activa si se edita en lienzo, o sobre todo el texto si está seleccionado como objeto
                   const applyTextInline = (
                     patch: Parameters<typeof applyStyleToAllParagraphs>[1],
-                    restoreFocus = false
+                    restoreFocus = false,
+                    recordHistory = true
                   ) => {
                     if (isEditingThisText && props.activeRichTextEditorRef?.current) {
                       props.activeRichTextEditorRef.current.applyStyle(patch, {
                         restoreFocus,
+                        recordHistory,
                       });
                       return;
                     }
-                    props.onUpdateObjects([single.id], (o) => {
-                      const t = o as TextObject;
-                      const nextP = applyStyleToAllParagraphs(
-                        ensureTextParagraphs(t),
-                        patch,
-                        getDefaultRunStyle(t)
-                      );
-                      return syncTextObjectFromParagraphs(t, nextP);
-                    });
+                    props.onUpdateObjects(
+                      [single.id],
+                      (o) => {
+                        const t = o as TextObject;
+                        const nextP = applyStyleToAllParagraphs(
+                          ensureTextParagraphs(t),
+                          patch,
+                          getDefaultRunStyle(t)
+                        );
+                        return syncTextObjectFromParagraphs(t, nextP);
+                      },
+                      recordHistory
+                    );
                   };
 
                   const applyTextAlign = (al: TextAlign, restoreFocus = false) => {
@@ -1523,26 +2300,33 @@ export const RightInspector: React.FC<RightInspectorProps> = React.memo((props) 
                         <span className="text-slate-600 dark:text-slate-400">
                           Color de texto
                         </span>
-                        <label
-                          className="relative w-7 h-7 rounded border border-slate-300 dark:border-slate-700 cursor-pointer overflow-hidden"
+                        <ColorSwatchPicker
+                          value={
+                            textSummary.color === 'mixed'
+                              ? 'mixed'
+                              : safeColorInputValue
+                          }
+                          customSwatches={props.settings.customColorSwatches}
+                          onUpdateCustomSwatches={updateCustomSwatches}
+                          onStartPreview={startObjectColorPreview}
+                          onPreviewColor={(c) => applyTextInline({ color: c }, false, false)}
+                          onCommitColor={(c) => {
+                            const snap = colorPreviewSnapRef.current;
+                            colorPreviewSnapRef.current = null;
+                            if (snap && props.onPushHistorySnapshot) {
+                              props.onPushHistorySnapshot(snap);
+                              applyTextInline({ color: c }, false, false);
+                            } else {
+                              applyTextInline({ color: c }, false, true);
+                            }
+                          }}
+                          onCancelPreview={cancelObjectColorPreview}
                           title={
                             textSummary.color === 'mixed'
                               ? 'Colores mixtos — clic para unificar'
                               : 'Color de texto'
                           }
-                          style={{
-                            background: safeColorDisplay,
-                          }}
-                        >
-                          <input
-                            type="color"
-                            value={safeColorInputValue}
-                            onChange={(e) =>
-                              applyTextInline({ color: e.target.value }, false)
-                            }
-                            className="opacity-0 absolute inset-0 w-full h-full cursor-pointer"
-                          />
-                        </label>
+                        />
                       </div>
                     </div>
                   );
@@ -1677,16 +2461,26 @@ export const RightInspector: React.FC<RightInspectorProps> = React.memo((props) 
 
                       <div className="flex items-center justify-between">
                         <span className="text-slate-600 dark:text-slate-400">Color de texto base</span>
-                        <input
-                          type="color"
+                        <ColorSwatchPicker
                           value={safeTable.color || '#0f172a'}
-                          onChange={(e) =>
-                            props.onUpdateObjects([single.id], (o) => ({
+                          customSwatches={props.settings.customColorSwatches}
+                          onUpdateCustomSwatches={updateCustomSwatches}
+                          onStartPreview={startObjectColorPreview}
+                          onPreviewColor={(c) =>
+                            props.onUpdateObjects(
+                              [single.id],
+                              (o) => ({ ...(o as TableObject), color: c }),
+                              false
+                            )
+                          }
+                          onCommitColor={(c) =>
+                            commitObjectColorWithPreview([single.id], (o) => ({
                               ...(o as TableObject),
-                              color: e.target.value,
+                              color: c,
                             }))
                           }
-                          className="w-7 h-7 rounded border border-slate-300 dark:border-slate-700 cursor-pointer"
+                          onCancelPreview={cancelObjectColorPreview}
+                          title="Color de texto base"
                         />
                       </div>
 
@@ -1707,16 +2501,32 @@ export const RightInspector: React.FC<RightInspectorProps> = React.memo((props) 
                               Auto
                             </button>
                           )}
-                          <input
-                            type="color"
-                            value={safeTable.headerFillColor || '#e2e8f0'}
-                            onChange={(e) =>
-                              props.onUpdateObjects([single.id], (o) => ({
+                          <ColorSwatchPicker
+                            compact
+                            allowAuto
+                            autoLabel="Auto"
+                            value={safeTable.headerFillColor || 'auto'}
+                            customSwatches={props.settings.customColorSwatches}
+                            onUpdateCustomSwatches={updateCustomSwatches}
+                            onStartPreview={startObjectColorPreview}
+                            onPreviewColor={(c) =>
+                              props.onUpdateObjects(
+                                [single.id],
+                                (o) => ({
+                                  ...(o as TableObject),
+                                  headerFillColor: c === 'auto' ? undefined : c,
+                                }),
+                                false
+                              )
+                            }
+                            onCommitColor={(c) =>
+                              commitObjectColorWithPreview([single.id], (o) => ({
                                 ...(o as TableObject),
-                                headerFillColor: e.target.value,
+                                headerFillColor: c === 'auto' ? undefined : c,
                               }))
                             }
-                            className="w-7 h-7 rounded border border-slate-300 dark:border-slate-700 cursor-pointer"
+                            onCancelPreview={cancelObjectColorPreview}
+                            title="Color de fondo del encabezado"
                           />
                         </div>
                       </div>
@@ -1789,9 +2599,33 @@ export const RightInspector: React.FC<RightInspectorProps> = React.memo((props) 
                       />
                     </div>
                     <div>
-                      <label className="block text-slate-600 dark:text-slate-400 mb-1.5">
-                        Color de nota
-                      </label>
+                      <div className="flex items-center justify-between mb-1.5">
+                        <label className="text-slate-600 dark:text-slate-400">
+                          Color de nota
+                        </label>
+                        <ColorSwatchPicker
+                          compact
+                          value={single.backgroundColor}
+                          customSwatches={props.settings.customColorSwatches}
+                          onUpdateCustomSwatches={updateCustomSwatches}
+                          onStartPreview={startObjectColorPreview}
+                          onPreviewColor={(c) =>
+                            props.onUpdateObjects(
+                              [single.id],
+                              (o) => ({ ...(o as StickyObject), backgroundColor: c }),
+                              false
+                            )
+                          }
+                          onCommitColor={(c) =>
+                            commitObjectColorWithPreview([single.id], (o) => ({
+                              ...(o as StickyObject),
+                              backgroundColor: c,
+                            }))
+                          }
+                          onCancelPreview={cancelObjectColorPreview}
+                          title="Color personalizado de nota"
+                        />
+                      </div>
                       <div className="flex flex-wrap gap-1.5">
                         {STICKY_COLORS.map((sc) => (
                           <button
@@ -1813,6 +2647,31 @@ export const RightInspector: React.FC<RightInspectorProps> = React.memo((props) 
                           />
                         ))}
                       </div>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <span className="text-slate-600 dark:text-slate-400">Color de texto</span>
+                      <ColorSwatchPicker
+                        compact
+                        value={single.textColor}
+                        customSwatches={props.settings.customColorSwatches}
+                        onUpdateCustomSwatches={updateCustomSwatches}
+                        onStartPreview={startObjectColorPreview}
+                        onPreviewColor={(c) =>
+                          props.onUpdateObjects(
+                            [single.id],
+                            (o) => ({ ...(o as StickyObject), textColor: c }),
+                            false
+                          )
+                        }
+                        onCommitColor={(c) =>
+                          commitObjectColorWithPreview([single.id], (o) => ({
+                            ...(o as StickyObject),
+                            textColor: c,
+                          }))
+                        }
+                        onCancelPreview={cancelObjectColorPreview}
+                        title="Color de texto de nota"
+                      />
                     </div>
                     <div>
                       <div className="flex items-center justify-between gap-2 text-slate-600 dark:text-slate-400 mb-1">
@@ -1866,6 +2725,56 @@ export const RightInspector: React.FC<RightInspectorProps> = React.memo((props) 
                       }
                       className="w-full rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 p-2 font-mono-tabular text-xs"
                     />
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-slate-600 dark:text-slate-400">Tamaño (px)</span>
+                      <div className="w-20">
+                        <FontSizeInput
+                          variant="inspector"
+                          min={8}
+                          max={96}
+                          value={sanitizeStoredFontSize(single.fontSize, 12)}
+                          onCommit={(nextSize) =>
+                            props.onUpdateObjects([single.id], (o) => ({
+                              ...(o as EquationObject),
+                              fontSize: nextSize,
+                            }))
+                          }
+                          onStep={(delta) =>
+                            props.onUpdateObjects([single.id], (o) => ({
+                              ...(o as EquationObject),
+                              fontSize: stepFontSizeValue(
+                                sanitizeStoredFontSize((o as EquationObject).fontSize, 12),
+                                delta
+                              ),
+                            }))
+                          }
+                        />
+                      </div>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <span className="text-slate-600 dark:text-slate-400">Color de tinta</span>
+                      <ColorSwatchPicker
+                        value={single.color}
+                        customSwatches={props.settings.customColorSwatches}
+                        onUpdateCustomSwatches={updateCustomSwatches}
+                        onStartPreview={startObjectColorPreview}
+                        onPreviewColor={(c) =>
+                          props.onUpdateObjects(
+                            [single.id],
+                            (o) => ({ ...(o as EquationObject), color: c }),
+                            false
+                          )
+                        }
+                        onCommitColor={(c) =>
+                          commitObjectColorWithPreview([single.id], (o) => ({
+                            ...(o as EquationObject),
+                            color: c,
+                          }))
+                        }
+                        onCancelPreview={cancelObjectColorPreview}
+                        title="Color de tinta de la ecuación"
+                      />
+                    </div>
                     <div className="flex items-center justify-between">
                       <span className="text-slate-600 dark:text-slate-400">Fondo</span>
                       <div className="flex items-center gap-1">
@@ -1901,6 +2810,29 @@ export const RightInspector: React.FC<RightInspectorProps> = React.memo((props) 
                         >
                           Blanco
                         </button>
+                        <ColorSwatchPicker
+                          compact
+                          allowTransparent
+                          value={single.backgroundColor}
+                          customSwatches={props.settings.customColorSwatches}
+                          onUpdateCustomSwatches={updateCustomSwatches}
+                          onStartPreview={startObjectColorPreview}
+                          onPreviewColor={(c) =>
+                            props.onUpdateObjects(
+                              [single.id],
+                              (o) => ({ ...(o as EquationObject), backgroundColor: c }),
+                              false
+                            )
+                          }
+                          onCommitColor={(c) =>
+                            commitObjectColorWithPreview([single.id], (o) => ({
+                              ...(o as EquationObject),
+                              backgroundColor: c,
+                            }))
+                          }
+                          onCancelPreview={cancelObjectColorPreview}
+                          title="Color de fondo de ecuación"
+                        />
                       </div>
                     </div>
                     <div className="grid grid-cols-2 gap-1.5">
@@ -2033,10 +2965,11 @@ export const RightInspector: React.FC<RightInspectorProps> = React.memo((props) 
                   </div>
                 )}
 
-                {/* Specific: Dimension */}
+                {/* Specific: Dimension (V1.11.8-2: tipografía, tamaño unificado y desplazamiento editable) */}
                 {single?.type === 'dimension' && (() => {
                   const dim = single as DimensionObject;
                   const metrics = computeDimensionMetrics(dim, props.cadConfig);
+                  const dimOffsetInfo = getDimensionLineOffset(dim, props.cadConfig);
                   const kindNames: Record<DimensionObject['dimKind'], string> = {
                     linear: 'Lineal (ACL)',
                     aligned: 'Alineada (ACA)',
@@ -2096,22 +3029,46 @@ export const RightInspector: React.FC<RightInspectorProps> = React.memo((props) 
                         </p>
                       </div>
 
-                      {dim.dimKind === 'linear' && (
-                        <div className="flex items-center justify-between">
-                          <span className="text-slate-600 dark:text-slate-400">Eje</span>
+                      {(dim.dimKind === 'linear' || dim.dimKind === 'aligned') && (
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-slate-600 dark:text-slate-400">Eje / Dirección</span>
                           <select
-                            value={dim.linearAxis ?? 'auto'}
-                            onChange={(e) =>
-                              props.onUpdateObjects([dim.id], (o) => ({
-                                ...(o as DimensionObject),
-                                linearAxis: e.target.value as CadLinearDimAxis,
-                              }))
-                            }
+                            value={dim.dimKind === 'aligned' ? 'aligned' : dim.linearAxis ?? 'auto'}
+                            onChange={(e) => {
+                              const nextAxis = e.target.value as CadLinearDimAxis;
+                              props.onUpdateObjects([dim.id], (o) => {
+                                const cur = o as DimensionObject;
+                                const updatedDim: DimensionObject =
+                                  nextAxis === 'aligned'
+                                    ? {
+                                        ...cur,
+                                        dimKind: 'aligned',
+                                        linearAxis: undefined,
+                                      }
+                                    : {
+                                        ...cur,
+                                        dimKind: 'linear',
+                                        linearAxis: nextAxis,
+                                      };
+                                const nextMetrics = computeDimensionMetrics(
+                                  updatedDim,
+                                  props.cadConfig
+                                );
+                                return {
+                                  ...updatedDim,
+                                  x: nextMetrics.bbox.x,
+                                  y: nextMetrics.bbox.y,
+                                  width: nextMetrics.bbox.width,
+                                  height: nextMetrics.bbox.height,
+                                };
+                              });
+                            }}
                             className="rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 px-2 py-1"
                           >
-                            <option value="auto">Automático</option>
+                            <option value="auto">Automático (H/V/Alineada)</option>
                             <option value="horizontal">Horizontal</option>
                             <option value="vertical">Vertical</option>
+                            <option value="aligned">Alineada (dirección del elemento)</option>
                           </select>
                         </div>
                       )}
@@ -2135,36 +3092,125 @@ export const RightInspector: React.FC<RightInspectorProps> = React.memo((props) 
                         </div>
                       )}
 
+                      {dimOffsetInfo !== null && (
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-slate-600 dark:text-slate-400">
+                            {dimOffsetInfo.label}
+                          </span>
+                          <input
+                            type="number"
+                            min={dimOffsetInfo.min}
+                            max={dimOffsetInfo.max}
+                            step={1}
+                            value={Math.round(dimOffsetInfo.value * 100) / 100}
+                            onChange={(e) => {
+                              const nextVal = Number(e.target.value);
+                              if (!Number.isFinite(nextVal)) return;
+                              props.onUpdateObjects([dim.id], (o) =>
+                                withDimensionLineOffset(
+                                  o as DimensionObject,
+                                  nextVal,
+                                  props.cadConfig
+                                )
+                              );
+                            }}
+                            className="w-24 rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 px-2 py-1 font-mono-tabular text-xs"
+                          />
+                        </div>
+                      )}
+
                       <div className="flex items-center justify-between">
                         <span className="text-slate-600 dark:text-slate-400">Color de cota</span>
-                        <input
-                          type="color"
+                        <ColorSwatchPicker
                           value={dim.strokeColor}
-                          onChange={(e) =>
-                            props.onUpdateObjects([dim.id], (o) => ({
+                          customSwatches={props.settings.customColorSwatches}
+                          onUpdateCustomSwatches={updateCustomSwatches}
+                          onStartPreview={startObjectColorPreview}
+                          onPreviewColor={(c) =>
+                            props.onUpdateObjects(
+                              [dim.id],
+                              (o) => ({
+                                ...(o as DimensionObject),
+                                strokeColor: c,
+                                textColor: c,
+                              }),
+                              false
+                            )
+                          }
+                          onCommitColor={(c) =>
+                            commitObjectColorWithPreview([dim.id], (o) => ({
                               ...(o as DimensionObject),
-                              strokeColor: e.target.value,
-                              textColor: e.target.value,
+                              strokeColor: c,
+                              textColor: c,
                             }))
                           }
-                          className="w-7 h-7 rounded border border-slate-300"
+                          onCancelPreview={cancelObjectColorPreview}
+                          title="Color de cota"
                         />
                       </div>
 
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-slate-600 dark:text-slate-400">Tipografía</span>
+                        <select
+                          value={dim.fontFamily ?? ''}
+                          onChange={(e) => {
+                            const val = e.target.value;
+                            props.onUpdateObjects([dim.id], (o) => ({
+                              ...(o as DimensionObject),
+                              fontFamily: val ? (val as TextFontFamily) : undefined,
+                            }));
+                          }}
+                          style={{
+                            fontFamily: dim.fontFamily ? getTextFontCss(dim.fontFamily) : undefined,
+                          }}
+                          className="max-w-[152px] rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 px-2 py-1 text-xs"
+                        >
+                          <option value="">Monoespacio (Predeterminado)</option>
+                          {TEXT_FONT_OPTIONS.map((f) => (
+                            <option key={f.id} value={f.id} style={{ fontFamily: f.css }}>
+                              {f.label}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+
                       <div>
-                        <label className="flex justify-between text-slate-600 dark:text-slate-400 mb-1">
-                          <span>Tamaño de etiqueta</span>
-                          <span className="font-mono-tabular">{dim.fontSize} px</span>
-                        </label>
+                        <div className="flex items-center justify-between gap-2 text-slate-600 dark:text-slate-400 mb-1">
+                          <span>Tamaño de etiqueta (px)</span>
+                          <div className="w-20">
+                            <FontSizeInput
+                              variant="inspector"
+                              min={8}
+                              max={96}
+                              value={sanitizeStoredFontSize(dim.fontSize, 12)}
+                              onCommit={(nextSize) =>
+                                props.onUpdateObjects([dim.id], (o) => ({
+                                  ...(o as DimensionObject),
+                                  fontSize: nextSize,
+                                }))
+                              }
+                              onStep={(delta) =>
+                                props.onUpdateObjects([dim.id], (o) => ({
+                                  ...(o as DimensionObject),
+                                  fontSize: stepFontSizeValue(
+                                    sanitizeStoredFontSize((o as DimensionObject).fontSize, 12),
+                                    delta
+                                  ),
+                                }))
+                              }
+                            />
+                          </div>
+                        </div>
                         <input
                           type="range"
-                          min={9}
-                          max={24}
-                          value={dim.fontSize}
+                          min={8}
+                          max={96}
+                          step={0.5}
+                          value={Math.max(8, Math.min(96, dim.fontSize))}
                           onChange={(e) =>
                             props.onUpdateObjects([dim.id], (o) => ({
                               ...(o as DimensionObject),
-                              fontSize: Number(e.target.value),
+                              fontSize: clampTextFontSize(Number(e.target.value)),
                             }))
                           }
                           className="w-full accent-blue-600"
@@ -2413,11 +3459,12 @@ export const RightInspector: React.FC<RightInspectorProps> = React.memo((props) 
                   </select>
                 </div>
 
-                {/* Nuevo selector independiente para el color de fondo del lienzo */}
+                {/* V1.11.8-14: Selector independiente para el color de fondo del lienzo con soporte para tema personalizado */}
                 <div className="p-2.5 rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-950/40">
                   <CanvasColorPickerControl
                     compact
                     theme={props.settings.theme}
+                    customThemeColors={props.settings.customThemeColors}
                     mode={props.settings.canvasBgMode}
                     customColor={props.settings.canvasBgCustomColor}
                     adaptStrokeColors={props.settings.adaptStrokeColorsToCanvasBg}
@@ -2439,22 +3486,78 @@ export const RightInspector: React.FC<RightInspectorProps> = React.memo((props) 
                     }
                   />
                 </div>
-                <div>
-                  <label className="flex justify-between text-slate-600 dark:text-slate-400 mb-1">
-                    <span>Tamaño de cuadrícula</span>
-                    <span className="font-mono-tabular">{props.board.gridSize} px</span>
-                  </label>
-                  <input
-                    type="range"
-                    min={12}
-                    max={72}
-                    value={props.board.gridSize}
-                    onChange={(e) =>
-                      props.onUpdateBoardMeta({ gridSize: Number(e.target.value) })
-                    }
-                    className="w-full accent-blue-600"
-                  />
-                </div>
+                {/* V1.11.8-15: Tamaño de cuadrícula ajustable (8 a 100 px) en todos los patrones y modos */}
+                {(() => {
+                  const currentGridSize =
+                    typeof props.board.gridSize === 'number' &&
+                    Number.isFinite(props.board.gridSize)
+                      ? Math.max(8, Math.min(100, Math.round(props.board.gridSize)))
+                      : 28;
+                  return (
+                    <div>
+                      <div className="flex items-center justify-between gap-2 mb-1">
+                        <label
+                          htmlFor="board-grid-size-px"
+                          className="text-slate-600 dark:text-slate-400"
+                        >
+                          Tamaño de cuadrícula
+                        </label>
+                        <div className="flex items-center gap-1">
+                          <input
+                            id="board-grid-size-px"
+                            type="number"
+                            min={8}
+                            max={100}
+                            step={1}
+                            value={gridSizeDraft ?? String(currentGridSize)}
+                            onChange={(e) => {
+                              const raw = e.target.value;
+                              setGridSizeDraft(raw);
+                              if (raw.trim() === '') return;
+                              const val = Number(raw);
+                              if (!Number.isFinite(val)) return;
+                              if (val >= 8 && val <= 100) {
+                                props.onUpdateBoardMeta({ gridSize: Math.round(val) });
+                              }
+                            }}
+                            onBlur={() => {
+                              if (gridSizeDraft !== null && gridSizeDraft.trim() !== '') {
+                                const val = Number(gridSizeDraft);
+                                if (Number.isFinite(val)) {
+                                  props.onUpdateBoardMeta({
+                                    gridSize: Math.max(8, Math.min(100, Math.round(val))),
+                                  });
+                                }
+                              }
+                              setGridSizeDraft(null);
+                            }}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter') {
+                                (e.currentTarget as HTMLInputElement).blur();
+                              }
+                            }}
+                            className="w-16 rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 px-2 py-0.5 text-xs font-mono-tabular text-right"
+                          />
+                          <span className="text-[11px] text-slate-500">px</span>
+                        </div>
+                      </div>
+                      <input
+                        type="range"
+                        min={8}
+                        max={100}
+                        step={1}
+                        value={currentGridSize}
+                        onChange={(e) => {
+                          setGridSizeDraft(null);
+                          props.onUpdateBoardMeta({
+                            gridSize: Math.max(8, Math.min(100, Math.round(Number(e.target.value)))),
+                          });
+                        }}
+                        className="w-full accent-blue-600"
+                      />
+                    </div>
+                  );
+                })()}
                 <label className="flex items-center justify-between cursor-pointer">
                   <span className="text-slate-600 dark:text-slate-400">
                     Mostrar sistema de coordenadas

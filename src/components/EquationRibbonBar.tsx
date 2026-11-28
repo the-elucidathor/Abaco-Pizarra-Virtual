@@ -17,12 +17,24 @@ import {
 } from '../utils/equationCatalog';
 // OPT: 1.1 — Fuerza actualización de miniaturas en cuanto KaTeX termine su carga diferida
 import { useKatexReady } from '../utils/katexLoader';
+import { MATH_RELATIVE_SIZE_OPTIONS } from '../utils/latexEditorEngine';
+import { ColorSwatchPicker } from './ColorSwatchPicker';
+import { FontSizeInput } from './FontSizeInput';
 
 interface EquationRibbonBarProps {
   equation: EquationObject;
   placeholderCount: number;
   inlineMode?: boolean;
   displayMode?: boolean;
+  hasSubselection?: boolean;
+  customSwatches?: string[];
+  onUpdateCustomSwatches?: (next: string[]) => void;
+  onStartColorPreview?: () => void;
+  onPreviewColor?: (color: string) => void;
+  onCommitColor?: (color: string) => void;
+  onCancelColorPreview?: () => void;
+  onApplySelectionColor?: (color: string) => void;
+  onApplySelectionRelativeSize?: (sizeCmd: string) => void;
   onToggleDisplayMode?: (displayMode: boolean) => void;
   onInsertSnippet: (snippet: string) => void;
   onReplaceLatex: (latex: string) => void;
@@ -38,6 +50,15 @@ export const EquationRibbonBar: React.FC<EquationRibbonBarProps> = React.memo(({
   placeholderCount,
   inlineMode = false,
   displayMode = false,
+  hasSubselection = false,
+  customSwatches,
+  onUpdateCustomSwatches,
+  onStartColorPreview,
+  onPreviewColor,
+  onCommitColor,
+  onCancelColorPreview,
+  onApplySelectionColor,
+  onApplySelectionRelativeSize,
   onToggleDisplayMode,
   onInsertSnippet,
   onReplaceLatex,
@@ -264,40 +285,103 @@ export const EquationRibbonBar: React.FC<EquationRibbonBarProps> = React.memo(({
             </button>
           )}
 
-          <div className="hidden sm:flex items-center border theme-border rounded theme-surface overflow-hidden">
+          {/* V1.11.8-7c: Control numérico unificado de tamaño (8-96 px) */}
+          <div className="hidden sm:flex items-center gap-0.5 border theme-border rounded theme-surface px-1 py-0.5">
             <button
               type="button"
               onMouseDown={(e) => e.preventDefault()}
               onClick={() =>
-                onUpdateMeta({ fontSize: Math.max(12, equation.fontSize - 2) })
+                onUpdateMeta({ fontSize: Math.max(8, equation.fontSize - 2) })
               }
-              className="px-1.5 py-1 text-[11px] hover:bg-black/5 dark:hover:bg-white/10"
+              className="px-1 py-0.5 text-[11px] rounded hover:bg-black/5 dark:hover:bg-white/10"
               title="Reducir tamaño"
             >
               A-
             </button>
-            <span className="px-1 text-[11px] font-mono-tabular opacity-75">
-              {equation.fontSize}
-            </span>
+            <FontSizeInput
+              variant="toolbar"
+              min={8}
+              max={96}
+              value={equation.fontSize}
+              onCommit={(nextSize) => onUpdateMeta({ fontSize: nextSize })}
+              onStep={(delta) =>
+                onUpdateMeta({ fontSize: Math.max(8, Math.min(96, equation.fontSize + delta)) })
+              }
+              ariaLabel="Tamaño de ecuación (px)"
+              title="Tamaño de ecuación (8–96 px)"
+            />
             <button
               type="button"
               onMouseDown={(e) => e.preventDefault()}
               onClick={() =>
-                onUpdateMeta({ fontSize: Math.min(64, equation.fontSize + 2) })
+                onUpdateMeta({ fontSize: Math.min(96, equation.fontSize + 2) })
               }
-              className="px-1.5 py-1 text-[11px] hover:bg-black/5 dark:hover:bg-white/10"
+              className="px-1 py-0.5 text-[11px] rounded hover:bg-black/5 dark:hover:bg-white/10"
               title="Aumentar tamaño"
             >
               A+
             </button>
           </div>
 
-          <input
-            type="color"
+          {/* V1.11.8-7d: Tamaño relativo KaTeX nativo para subselección parcial */}
+          {!inlineMode && onApplySelectionRelativeSize && (
+            <select
+              value=""
+              onMouseDown={(e) => e.stopPropagation()}
+              onChange={(e) => {
+                if (!e.target.value) return;
+                onApplySelectionRelativeSize(e.target.value);
+              }}
+              title={
+                hasSubselection
+                  ? 'Aplicar tamaño relativo KaTeX a la parte seleccionada'
+                  : 'Tamaño relativo KaTeX en posición/selección actual'
+              }
+              className={`text-[10px] rounded border px-1.5 py-1 h-7 max-w-[96px] theme-surface ${
+                hasSubselection ? 'border-blue-500 text-blue-600 dark:text-blue-300 font-medium' : 'theme-border'
+              }`}
+            >
+              <option value="">{hasSubselection ? 'Tam. sel.' : 'Tam. KaTeX'}</option>
+              {MATH_RELATIVE_SIZE_OPTIONS.map((opt) => (
+                <option key={opt.cmd} value={opt.cmd}>
+                  {opt.label}
+                </option>
+              ))}
+            </select>
+          )}
+
+          {/* V1.11.8-5, 7d, 8: Paleta rápida de 18 + 4 personalizados (global o subselección) */}
+          <ColorSwatchPicker
+            compact
             value={equation.color}
-            onChange={(e) => onUpdateMeta({ color: e.target.value })}
-            title="Color de tinta"
-            className="w-6 h-7 rounded border theme-border cursor-pointer shrink-0"
+            customSwatches={customSwatches}
+            onUpdateCustomSwatches={onUpdateCustomSwatches}
+            label={hasSubselection && onApplySelectionColor ? 'Sel.' : undefined}
+            title={
+              hasSubselection && onApplySelectionColor
+                ? 'Color para parte seleccionada (\textcolor)'
+                : 'Color de tinta de la ecuación'
+            }
+            onStartPreview={
+              hasSubselection && onApplySelectionColor ? undefined : onStartColorPreview
+            }
+            onPreviewColor={
+              hasSubselection && onApplySelectionColor
+                ? undefined
+                : onPreviewColor ?? ((c) => onUpdateMeta({ color: c }))
+            }
+            onCommitColor={(c) => {
+              if (hasSubselection && onApplySelectionColor) {
+                onApplySelectionColor(c);
+              } else if (onCommitColor) {
+                onCommitColor(c);
+              } else {
+                onUpdateMeta({ color: c });
+              }
+            }}
+            onCancelPreview={
+              hasSubselection && onApplySelectionColor ? undefined : onCancelColorPreview
+            }
           />
 
           <button

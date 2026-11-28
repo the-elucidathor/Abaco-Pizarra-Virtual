@@ -40,7 +40,7 @@ export type CadArcMethod = '3point' | 'center-start-angle';
 export type CadCircleMethod = 'radius' | 'diameter';
 export type CadRectMethod = 'corner' | 'dimensions';
 export type CadPolygonFit = 'inscribed' | 'circumscribed';
-export type CadLinearDimAxis = 'auto' | 'horizontal' | 'vertical';
+export type CadLinearDimAxis = 'auto' | 'horizontal' | 'vertical' | 'aligned';
 
 export type CadTrackingMode = 'auto' | 'acquire';
 

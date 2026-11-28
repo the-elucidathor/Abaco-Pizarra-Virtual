@@ -112,9 +112,10 @@ export function computePageFrameGeometry(
     typeof pageHeight === 'number' && Number.isFinite(pageHeight) && pageHeight > 0
       ? pageHeight
       : 1056;
+  // V1.11.8-15: Tamaño de cuadrícula ajustable de 8 px a 100 px
   const safeGrid =
     typeof gridSize === 'number' && Number.isFinite(gridSize)
-      ? Math.max(12, gridSize)
+      ? Math.max(8, Math.min(100, Math.round(gridSize)))
       : 28;
   const safeMarginMm = clamp(
     typeof marginMm === 'number' && Number.isFinite(marginMm)

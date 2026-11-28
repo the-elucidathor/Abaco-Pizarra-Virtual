@@ -24,9 +24,10 @@ import type {
 } from '../../types/whiteboard';
 import { normalizarContenidoTexto } from '../../utils/richText';
 import {
+  TABLE_COMPACT_MIN_COL_WIDTH,
+  TABLE_COMPACT_MIN_ROW_HEIGHT,
   TABLE_MAX_COLS,
   TABLE_MAX_ROWS,
-  TABLE_MIN_COL_WIDTH,
   TABLE_MIN_ROW_HEIGHT,
   type TableCellCoord,
   addTableCol,
@@ -178,37 +179,38 @@ export const TableNodeView: React.FC<TableNodeViewProps> = React.memo(({
     return () => window.removeEventListener('pointerup', onUp);
   }, [isSelectingRange]);
 
-  // Sincroniza altura automática de filas cuando el texto de una celda crece al envolver líneas
-  const syncMeasuredRowHeights = useCallback(() => {
-    if (locked) return;
-    const cur = tableRef.current;
-    let changed = false;
-    const nextHeights = cur.rowHeights.map((storedH, rIdx) => {
-      const tr = rowRefs.current[rIdx];
-      if (!tr) return storedH;
-      const measured = Math.ceil(tr.getBoundingClientRect().height / Math.max(0.15, zoom));
-      const safeMin = Math.max(TABLE_MIN_ROW_HEIGHT, storedH);
-      if (measured > safeMin + 2) {
-        changed = true;
-        return measured;
+  // V1.11.8-16: Sincroniza altura solo cuando el usuario escribe en una fila activa y el contenido supera la altura actual (sin bloquear el encogimiento compacto)
+  const syncMeasuredRowHeights = useCallback(
+    (targetRowIdx?: number) => {
+      if (locked) return;
+      const cur = tableRef.current;
+      let changed = false;
+      const nextHeights = cur.rowHeights.map((storedH, rIdx) => {
+        if (targetRowIdx !== undefined && rIdx !== targetRowIdx) return storedH;
+        const tr = rowRefs.current[rIdx];
+        if (!tr) return storedH;
+        const rowCells = cur.cells[rIdx] || [];
+        const hasText = rowCells.some((c) => Boolean(c?.content?.trim()));
+        if (!hasText) return storedH;
+        const measured = Math.ceil(tr.getBoundingClientRect().height / Math.max(0.15, zoom));
+        if (measured > storedH + 2 && storedH >= TABLE_MIN_ROW_HEIGHT) {
+          changed = true;
+          return measured;
+        }
+        return storedH;
+      });
+      if (changed) {
+        onUpdateTable(
+          recomputeTableOuterSize({
+            ...cur,
+            rowHeights: nextHeights,
+          }),
+          false
+        );
       }
-      return storedH;
-    });
-    if (changed) {
-      onUpdateTable(
-        recomputeTableOuterSize({
-          ...cur,
-          rowHeights: nextHeights,
-        }),
-        false
-      );
-    }
-  }, [locked, onUpdateTable, zoom]);
-
-  useEffect(() => {
-    const raf = requestAnimationFrame(syncMeasuredRowHeights);
-    return () => cancelAnimationFrame(raf);
-  }, [table.cells, table.colWidths, table.fontSize, table.rows, syncMeasuredRowHeights]);
+    },
+    [locked, onUpdateTable, zoom]
+  );
 
   // Calcula lista rectangular de celdas seleccionadas actualmente
   const selectedCells: TableCellCoord[] = useMemo(() => {
@@ -266,7 +268,7 @@ export const TableNodeView: React.FC<TableNodeViewProps> = React.memo(({
       const dxWorld = (ev.clientX - startX) / Math.max(0.15, zoom);
       const nextColWidths = [...snapshot.colWidths];
       nextColWidths[colIdx] = Math.max(
-        TABLE_MIN_COL_WIDTH,
+        TABLE_COMPACT_MIN_COL_WIDTH,
         Math.round(initialW + dxWorld)
       );
       onUpdateTable(
@@ -288,7 +290,7 @@ export const TableNodeView: React.FC<TableNodeViewProps> = React.memo(({
     window.addEventListener('pointerup', onUp);
   };
 
-  // Arrastre para ajustar manualmente el alto de una fila (sin permitir encoger por debajo de su texto)
+  // V1.11.8-16: Arrastre para ajustar manualmente el alto de una fila hasta dimensiones compactas
   const startRowResize = (e: React.PointerEvent, rowIdx: number) => {
     if (locked) return;
     e.preventDefault();
@@ -297,19 +299,7 @@ export const TableNodeView: React.FC<TableNodeViewProps> = React.memo(({
     const startY = e.clientY;
     const snapshot = normalizarTabla(tableRef.current);
     const initialH = snapshot.rowHeights[rowIdx] ?? 40;
-
-    const trEl = rowRefs.current[rowIdx];
-    let minContentH = TABLE_MIN_ROW_HEIGHT;
-    if (trEl) {
-      // Mide la altura intrínseca mínima del contenido de esa fila para no cortarlo
-      const cellsEls = Array.from(trEl.querySelectorAll<HTMLElement>('[data-rt-content-measure="true"]'));
-      for (const el of cellsEls) {
-        minContentH = Math.max(
-          minContentH,
-          Math.ceil(el.offsetHeight + 4)
-        );
-      }
-    }
+    const minContentH = TABLE_COMPACT_MIN_ROW_HEIGHT;
 
     const onMove = (ev: PointerEvent) => {
       const dyWorld = (ev.clientY - startY) / Math.max(0.15, zoom);
@@ -747,11 +737,12 @@ export const TableNodeView: React.FC<TableNodeViewProps> = React.memo(({
         </div>
       )}
 
-      {/* Estructura HTML de tabla con ancho fijo de columnas y filas autoexpandibles */}
+      {/* Estructura HTML de tabla con dimensiones exactas y escalado limpio para celdas compactas */}
       <table
         className="border-collapse table-fixed"
         style={{
           width: table.width,
+          height: table.height,
           border: `1.5px solid ${borderColor}`,
         }}
       >
@@ -763,7 +754,7 @@ export const TableNodeView: React.FC<TableNodeViewProps> = React.memo(({
         <tbody>
           {table.cells.map((row, rIdx) => {
             const isHeader = table.hasHeaderRow && rIdx === 0;
-            const rowH = table.rowHeights[rIdx] ?? TABLE_MIN_ROW_HEIGHT;
+            const rowH = table.rowHeights[rIdx] ?? TABLE_COMPACT_MIN_ROW_HEIGHT;
             return (
               <tr
                 key={rIdx}
@@ -783,6 +774,11 @@ export const TableNodeView: React.FC<TableNodeViewProps> = React.memo(({
                     defaults,
                     safeAlign
                   );
+                  const colW = table.colWidths[cIdx] ?? TABLE_COMPACT_MIN_COL_WIDTH;
+                  const compactTight = rowH < 28 || colW < 48;
+                  const compactScale = compactTight
+                    ? Math.max(0.4, Math.min(1, rowH / 28, colW / 44))
+                    : 1;
 
                   return (
                     <td
@@ -863,7 +859,7 @@ export const TableNodeView: React.FC<TableNodeViewProps> = React.memo(({
                               defaults
                             );
                             onUpdateTable(updated, recordHistory);
-                            requestAnimationFrame(syncMeasuredRowHeights);
+                            requestAnimationFrame(() => syncMeasuredRowHeights(rIdx));
                           }}
                           onTableCellKeyDown={(ev, info) =>
                             handleCellKeyDown(rIdx, cIdx, ev, info)
@@ -899,16 +895,23 @@ export const TableNodeView: React.FC<TableNodeViewProps> = React.memo(({
                           onFinish={() => onSetEditingCell(null)}
                         />
                       ) : (
-                        <RichTextViewer
-                          paragraphs={paragraphs}
-                          defaults={defaults}
-                          defaultAlign={safeAlign}
-                          listStyle="none"
-                          backgroundColor="transparent"
-                          autoWidth={false}
-                          compactCell
-                          resolveColor={resolveCellTextColor}
-                        />
+                        <div
+                          className="w-full overflow-hidden"
+                          style={{ height: rowH, maxHeight: rowH }}
+                        >
+                          <RichTextViewer
+                            paragraphs={paragraphs}
+                            defaults={defaults}
+                            defaultAlign={safeAlign}
+                            listStyle="none"
+                            backgroundColor="transparent"
+                            autoWidth={false}
+                            compactCell
+                            compactTight={compactTight}
+                            compactScale={compactScale}
+                            resolveColor={resolveCellTextColor}
+                          />
+                        </div>
                       )}
                     </td>
                   );

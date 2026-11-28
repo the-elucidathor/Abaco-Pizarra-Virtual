@@ -98,6 +98,7 @@ import {
   type SpellcheckContextMenuState,
 } from './SpellcheckContextMenu';
 import { FontSizeInput } from './FontSizeInput';
+import { ColorSwatchPicker } from './ColorSwatchPicker';
 
 // Ancho máximo por defecto (en coordenadas del mundo) antes de hacer salto de línea en modo automático
 export const TEXT_AUTO_MAX_WIDTH = 600;
@@ -137,7 +138,10 @@ export interface ActiveInlineEquationSession {
 
 // Interfaz imperativa expuesta para controlar el editor desde barras externas (p. ej. Inspector, cinta de ecuaciones o celdas)
 export interface RichTextEditorHandle {
-  applyStyle: (patch: Partial<TextRunStyle>, options?: { restoreFocus?: boolean }) => void;
+  applyStyle: (
+    patch: Partial<TextRunStyle>,
+    options?: { restoreFocus?: boolean; recordHistory?: boolean }
+  ) => void;
   stepFontSize: (delta: number, options?: { restoreFocus?: boolean }) => void;
   applyAlign: (align: TextAlign, options?: { restoreFocus?: boolean }) => void;
   insertOrUpdateMath: (
@@ -174,6 +178,9 @@ export interface RichTextViewerProps {
   maxAutoWidth?: number;
   resolveColor?: (color: string) => string;
   compactCell?: boolean;
+  // V1.11.8-16: Ajustes visuales compactos cuando la celda de tabla es reducida por debajo del tamaño estándar
+  compactTight?: boolean;
+  compactScale?: number;
   className?: string;
 }
 
@@ -188,9 +195,16 @@ export const RichTextViewer: React.FC<RichTextViewerProps> = React.memo(({
   maxAutoWidth = TEXT_AUTO_MAX_WIDTH,
   resolveColor,
   compactCell = false,
+  compactTight = false,
+  compactScale = 1,
   className = '',
 }) => {
   const katexReady = useKatexReady();
+  const safeScale =
+    typeof compactScale === 'number' && Number.isFinite(compactScale)
+      ? Math.max(0.35, Math.min(1, compactScale))
+      : 1;
+  const scaledPx = (px: number) => `${Math.max(6, Math.round(px * safeScale * 10) / 10)}px`;
   const normalized = useMemo(
     () => normalizarContenidoTexto(paragraphs, defaults, defaultAlign),
     [paragraphs, defaults, defaultAlign]
@@ -230,9 +244,13 @@ export const RichTextViewer: React.FC<RichTextViewerProps> = React.memo(({
       {/* El borde transparente de 2px iguala exactamente la caja del RichTextEditor para evitar saltos al entrar/salir de edición */}
       <div
         data-rt-content-measure="true"
-        className={`box-border border-2 border-transparent ${
-          compactCell ? 'px-1.5 py-1' : 'p-1.5'
-        } overflow-visible leading-snug select-none whitespace-pre-wrap break-words ${
+        className={`box-border ${
+          compactTight
+            ? 'border border-transparent px-0.5 py-0 leading-none'
+            : `border-2 border-transparent ${
+                compactCell ? 'px-1.5 py-1' : 'p-1.5'
+              } leading-snug`
+        } overflow-visible select-none whitespace-pre-wrap break-words ${
           autoWidth ? 'min-w-[64px]' : 'w-full'
         }`}
         style={
@@ -262,14 +280,14 @@ export const RichTextViewer: React.FC<RichTextViewerProps> = React.memo(({
               style={{
                 textAlign: visualAlign,
                 textAlignLast: visualAlign === 'justify' ? 'left' : undefined,
-                minHeight: '1.35em',
+                minHeight: compactTight ? '1em' : '1.35em',
               }}
             >
               {prefix && (
                 <span
                   style={{
                     fontFamily: getTextFontCss(firstStyle.fontFamily),
-                    fontSize: `${firstStyle.fontSize}px`,
+                    fontSize: scaledPx(firstStyle.fontSize),
                     color: mapColor(firstStyle.color),
                   }}
                 >
@@ -280,7 +298,7 @@ export const RichTextViewer: React.FC<RichTextViewerProps> = React.memo(({
                 <span
                   style={{
                     fontFamily: getTextFontCss(firstStyle.fontFamily),
-                    fontSize: `${firstStyle.fontSize}px`,
+                    fontSize: scaledPx(firstStyle.fontSize),
                   }}
                 >
                   {'\u200B'}
@@ -301,7 +319,7 @@ export const RichTextViewer: React.FC<RichTextViewerProps> = React.memo(({
                         }`}
                         style={{
                           fontFamily: getTextFontCss(st.fontFamily),
-                          fontSize: `${st.fontSize}px`,
+                          fontSize: scaledPx(st.fontSize),
                           color: mapColor(st.color),
                         }}
                         dangerouslySetInnerHTML={{
@@ -315,7 +333,7 @@ export const RichTextViewer: React.FC<RichTextViewerProps> = React.memo(({
                       key={rIdx}
                       style={{
                         fontFamily: getTextFontCss(st.fontFamily),
-                        fontSize: `${st.fontSize}px`,
+                        fontSize: scaledPx(st.fontSize),
                         fontWeight: st.bold ? 700 : 400,
                         fontStyle: st.italic ? 'italic' : 'normal',
                         textDecoration: st.underline ? 'underline' : 'none',
@@ -353,6 +371,7 @@ export interface RichTextEditorProps {
   placeholderDefaultsToSelectAll?: string[];
   resolveColor?: (color: string) => string;
   onChangeParagraphs: (nextParagraphs: RichTextParagraph[], recordHistory: boolean) => void;
+  onPushParagraphsSnapshot?: (snapshotParagraphs: RichTextParagraph[]) => void;
   onChangeListStyle?: (nextListStyle: 'none' | 'bullet' | 'numbered') => void;
   onChangeLang?: (nextLang: SpellcheckLanguage) => void;
   onSelectionSummaryChange?: (summary: SelectionStyleSummary) => void;
@@ -930,21 +949,29 @@ function syncEditableDom(
     const visualAlign: TextAlign =
       autoWidth && storedAlign === 'justify' ? 'left' : storedAlign;
 
+    const runs = Array.isArray(p.runs) && p.runs.length > 0 ? p.runs : [{ text: '' }];
+    const isEmptyLine =
+      runs.length === 1 && runs[0].text.length === 0 && !isMathRun(runs[0]);
+    const firstStyle = resolveRunStyle(runs[0], defaults);
+
     pDiv.style.textAlign = visualAlign;
     pDiv.style.textAlignLast = visualAlign === 'justify' ? 'left' : '';
     pDiv.style.minHeight = '1.35em';
 
+    // V1.11.8-12: Iguala tipografía, tamaño y color del prefijo de lista con RichTextViewer para evitar saltos visuales
     if (listStyle === 'bullet') {
       pDiv.setAttribute('data-list-prefix', '• ');
       pDiv.className = 'before:content-[attr(data-list-prefix)] before:select-none';
+      pDiv.style.fontFamily = getTextFontCss(firstStyle.fontFamily);
+      pDiv.style.fontSize = `${firstStyle.fontSize}px`;
+      pDiv.style.color = mapColor(firstStyle.color);
     } else if (listStyle === 'numbered') {
       pDiv.setAttribute('data-list-prefix', `${pIdx + 1}. `);
       pDiv.className = 'before:content-[attr(data-list-prefix)] before:select-none';
+      pDiv.style.fontFamily = getTextFontCss(firstStyle.fontFamily);
+      pDiv.style.fontSize = `${firstStyle.fontSize}px`;
+      pDiv.style.color = mapColor(firstStyle.color);
     }
-
-    const runs = Array.isArray(p.runs) && p.runs.length > 0 ? p.runs : [{ text: '' }];
-    const isEmptyLine =
-      runs.length === 1 && runs[0].text.length === 0 && !isMathRun(runs[0]);
 
     runs.forEach((run, rIdx) => {
       const span = document.createElement('span');
@@ -1028,6 +1055,7 @@ export const RichTextEditor = forwardRef<RichTextEditorHandle, RichTextEditorPro
       placeholderDefaultsToSelectAll = ['Escribe aquí...', 'Nueva nota...', 'Cuadro de texto'],
       resolveColor,
       onChangeParagraphs,
+      onPushParagraphsSnapshot,
       onChangeListStyle,
       onChangeLang,
       onSelectionSummaryChange,
@@ -1109,6 +1137,7 @@ export const RichTextEditor = forwardRef<RichTextEditorHandle, RichTextEditorPro
       useState<ActiveInlineEquationSession | null>(null);
     const activeInlineMathRef = useRef<ActiveInlineEquationSession | null>(null);
     activeInlineMathRef.current = activeInlineMath;
+    const colorPreviewSnapshotRef = useRef<RichTextParagraph[] | null>(null);
 
     // Estado del corrector ortográfico (completamente aislado en el editor)
     const misspelledEntriesRef = useRef<MisspelledDomEntry[]>([]);
@@ -1565,10 +1594,14 @@ export const RichTextEditor = forwardRef<RichTextEditorHandle, RichTextEditorPro
     );
 
     const applyStyle = useCallback(
-      (patch: Partial<TextRunStyle>, options?: { restoreFocus?: boolean }) => {
+      (
+        patch: Partial<TextRunStyle>,
+        options?: { restoreFocus?: boolean; recordHistory?: boolean }
+      ) => {
         const latestParagraphs = flushDomInput(false);
         const sel = captureCurrentSelection(latestParagraphs);
         const restoreFocus = options?.restoreFocus ?? true;
+        const recordHistory = options?.recordHistory ?? true;
 
         if (sel.start === sel.end) {
           const base = getCaretRunStyle(latestParagraphs, sel.start, defaultsRef.current);
@@ -1599,7 +1632,7 @@ export const RichTextEditor = forwardRef<RichTextEditorHandle, RichTextEditorPro
         pendingExternalSyncRef.current = true;
         desiredSelectionRef.current = { start: sel.start, end: sel.end };
         restoreFocusAfterSyncRef.current = restoreFocus;
-        onChangeParagraphsRef.current(next, true);
+        onChangeParagraphsRef.current(next, recordHistory);
       },
       [captureCurrentSelection, flushDomInput, refreshSummary]
     );
@@ -2826,31 +2859,44 @@ export const RichTextEditor = forwardRef<RichTextEditorHandle, RichTextEditorPro
               </>
             )}
 
-            <label
-              className="relative w-5 h-5 rounded border border-slate-300 dark:border-slate-600 cursor-pointer ml-0.5 overflow-hidden shrink-0"
+            {/* V1.11.8-5 & V1.11.8-8: Paleta rápida de 18 + 4 con vista previa rAF y 1 acción de historial */}
+            <ColorSwatchPicker
+              compact
+              value={summary.color === 'mixed' ? 'mixed' : safeColorValue}
               title={
                 summary.color === 'mixed'
                   ? 'Colores mixtos — selecciona un color para unificar'
                   : 'Color de texto'
               }
-              style={{
-                background:
-                  summary.color === 'mixed'
-                    ? 'conic-gradient(#ef4444, #eab308, #22c55e, #3b82f6, #ef4444)'
-                    : safeColorValue,
+              onStartPreview={() => {
+                colorPreviewSnapshotRef.current = flushDomInput(false);
               }}
-            >
-              <input
-                type="color"
-                value={safeColorValue.startsWith('#') ? safeColorValue : '#0f172a'}
-                onMouseDown={(e) => e.stopPropagation()}
-                onPointerDown={(e) => e.stopPropagation()}
-                onChange={(e) =>
-                  applyStyle({ color: e.target.value }, { restoreFocus: false })
+              onPreviewColor={(hex) => {
+                applyStyle({ color: hex }, { restoreFocus: false, recordHistory: false });
+              }}
+              onCommitColor={(hex) => {
+                const snap = colorPreviewSnapshotRef.current;
+                colorPreviewSnapshotRef.current = null;
+                if (snap && onPushParagraphsSnapshot) {
+                  try {
+                    onPushParagraphsSnapshot(snap);
+                  } catch {
+                    // ignorar
+                  }
+                  applyStyle({ color: hex }, { restoreFocus: false, recordHistory: false });
+                } else {
+                  applyStyle({ color: hex }, { restoreFocus: false, recordHistory: true });
                 }
-                className="opacity-0 absolute inset-0 w-full h-full cursor-pointer"
-              />
-            </label>
+              }}
+              onCancelPreview={() => {
+                const snap = colorPreviewSnapshotRef.current;
+                colorPreviewSnapshotRef.current = null;
+                if (snap) {
+                  pendingExternalSyncRef.current = true;
+                  onChangeParagraphsRef.current(snap, false);
+                }
+              }}
+            />
 
             {!compactCell && (onActiveInlineEquationChange || onRequestEquationEditor) && (
               <>

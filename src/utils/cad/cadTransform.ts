@@ -1308,7 +1308,8 @@ export function scaleCanvasObjectInBox(
   }
 
   if (initObj.type === 'table') {
-    const scaled = scaleTableToDimensions(initObj as TableObject, Math.max(60, nextW), Math.max(40, nextH));
+    // V1.11.8-16: Permite reducir tablas en grupo hasta dimensiones compactas (mínimo 40 px)
+    const scaled = scaleTableToDimensions(initObj as TableObject, Math.max(40, nextW), Math.max(40, nextH));
     return {
       ...scaled,
       x: nextX,

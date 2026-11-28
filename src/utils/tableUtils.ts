@@ -30,6 +30,10 @@ export const TABLE_MAX_ROWS = 30;
 export const TABLE_MAX_COLS = 15;
 export const TABLE_MIN_COL_WIDTH = 56;
 export const TABLE_MIN_ROW_HEIGHT = 34;
+// V1.11.8-16: Mínimos compactos para permitir reducir tablas libremente hasta ~40 px sin bloquear el ajuste
+export const TABLE_COMPACT_MIN_COL_WIDTH = 8;
+export const TABLE_COMPACT_MIN_ROW_HEIGHT = 8;
+export const TABLE_COMPACT_MIN_OUTER_SIZE = 40;
 export const TABLE_DEFAULT_COL_WIDTH = 132;
 export const TABLE_DEFAULT_ROW_HEIGHT = 40;
 
@@ -160,17 +164,18 @@ function normalizarTablaUncached(
     typeof raw.color === 'string' && raw.color.trim() ? raw.color : undefined;
   const baseDefaults = getTableDefaultRunStyle({ fontSize, fontFamily, color }, false);
 
+  // V1.11.8-16: Preserva tamaños existentes exactamente y permite compactar hasta el mínimo compacto (8 px por columna/fila)
   const colWidths: number[] = Array.from({ length: cols }, (_, c) => {
     const val = Array.isArray(raw.colWidths) ? raw.colWidths[c] : undefined;
     return typeof val === 'number' && Number.isFinite(val)
-      ? Math.max(TABLE_MIN_COL_WIDTH, Math.round(val))
+      ? Math.max(TABLE_COMPACT_MIN_COL_WIDTH, Math.round(val))
       : TABLE_DEFAULT_COL_WIDTH;
   });
 
   const rowHeights: number[] = Array.from({ length: rows }, (_, r) => {
     const val = Array.isArray(raw.rowHeights) ? raw.rowHeights[r] : undefined;
     return typeof val === 'number' && Number.isFinite(val)
-      ? Math.max(TABLE_MIN_ROW_HEIGHT, Math.round(val))
+      ? Math.max(TABLE_COMPACT_MIN_ROW_HEIGHT, Math.round(val))
       : TABLE_DEFAULT_ROW_HEIGHT;
   });
 
@@ -205,8 +210,8 @@ function normalizarTablaUncached(
       typeof raw.y === 'number' && Number.isFinite(raw.y)
         ? raw.y
         : fallbackMeta?.y ?? 0,
-    width: Math.max(TABLE_MIN_COL_WIDTH, totalWidth),
-    height: Math.max(TABLE_MIN_ROW_HEIGHT, totalHeight),
+    width: Math.max(TABLE_COMPACT_MIN_OUTER_SIZE, totalWidth),
+    height: Math.max(TABLE_COMPACT_MIN_OUTER_SIZE, totalHeight),
     rotation:
       typeof raw.rotation === 'number' && Number.isFinite(raw.rotation)
         ? raw.rotation
@@ -311,17 +316,17 @@ export function createTableObject(opts: {
 // Recalcula width y height de la tabla a partir de sus colWidths y rowHeights
 export function recomputeTableOuterSize(table: TableObject): TableObject {
   const width = table.colWidths.reduce(
-    (sum, w) => sum + Math.max(TABLE_MIN_COL_WIDTH, w),
+    (sum, w) => sum + Math.max(TABLE_COMPACT_MIN_COL_WIDTH, Math.round(w)),
     0
   );
   const height = table.rowHeights.reduce(
-    (sum, h) => sum + Math.max(TABLE_MIN_ROW_HEIGHT, h),
+    (sum, h) => sum + Math.max(TABLE_COMPACT_MIN_ROW_HEIGHT, Math.round(h)),
     0
   );
   return {
     ...table,
-    width: Math.max(TABLE_MIN_COL_WIDTH, Math.round(width)),
-    height: Math.max(TABLE_MIN_ROW_HEIGHT, Math.round(height)),
+    width: Math.max(TABLE_COMPACT_MIN_OUTER_SIZE, Math.round(width)),
+    height: Math.max(TABLE_COMPACT_MIN_OUTER_SIZE, Math.round(height)),
   };
 }
 
@@ -525,25 +530,63 @@ export function applyFormattingToTableCells(
   };
 }
 
-// Escala proporcionalmente colWidths y rowHeights al redimensionar la tabla desde los manejadores exteriores
+// V1.11.8-16: Distribuye longitudes enteras proporcionales respetando mínimo compacto sin deriva por redondeo
+function distributeTableTrackSizes(
+  current: number[],
+  targetTotal: number,
+  minPerTrack: number
+): number[] {
+  const count = current.length;
+  if (count === 0) return [];
+  const safeTarget = Math.max(count * minPerTrack, Math.round(targetTotal));
+  const curSum = Math.max(1, current.reduce((a, b) => a + Math.max(1, b), 0));
+  const scaled = current.map((v) =>
+    Math.max(minPerTrack, Math.floor((Math.max(1, v) / curSum) * safeTarget))
+  );
+  let diff = safeTarget - scaled.reduce((a, b) => a + b, 0);
+  let guard = 0;
+  while (diff !== 0 && guard < count * 120) {
+    for (let i = count - 1; i >= 0 && diff !== 0; i--) {
+      if (diff > 0) {
+        scaled[i] += 1;
+        diff -= 1;
+      } else if (scaled[i] > minPerTrack) {
+        scaled[i] -= 1;
+        diff += 1;
+      }
+    }
+    guard++;
+  }
+  return scaled;
+}
+
+// Escala proporcionalmente colWidths y rowHeights al redimensionar la tabla desde los manejadores exteriores o el inspector
 export function scaleTableToDimensions(
   tableInput: TableObject,
   targetWidth: number,
   targetHeight: number
 ): TableObject {
   const table = normalizarTabla(tableInput);
-  const safeTargetW = Math.max(table.cols * TABLE_MIN_COL_WIDTH, targetWidth);
-  const safeTargetH = Math.max(table.rows * TABLE_MIN_ROW_HEIGHT, targetHeight);
-  const curW = Math.max(1, table.colWidths.reduce((a, b) => a + b, 0));
-  const curH = Math.max(1, table.rowHeights.reduce((a, b) => a + b, 0));
-  const sx = safeTargetW / curW;
-  const sy = safeTargetH / curH;
-
-  const colWidths = table.colWidths.map((w) =>
-    Math.max(TABLE_MIN_COL_WIDTH, Math.round(w * sx))
+  const minW = Math.max(
+    TABLE_COMPACT_MIN_OUTER_SIZE,
+    table.cols * TABLE_COMPACT_MIN_COL_WIDTH
   );
-  const rowHeights = table.rowHeights.map((h) =>
-    Math.max(TABLE_MIN_ROW_HEIGHT, Math.round(h * sy))
+  const minH = Math.max(
+    TABLE_COMPACT_MIN_OUTER_SIZE,
+    table.rows * TABLE_COMPACT_MIN_ROW_HEIGHT
+  );
+  const safeTargetW = Math.max(minW, Number.isFinite(targetWidth) ? Math.round(targetWidth) : minW);
+  const safeTargetH = Math.max(minH, Number.isFinite(targetHeight) ? Math.round(targetHeight) : minH);
+
+  const colWidths = distributeTableTrackSizes(
+    table.colWidths,
+    safeTargetW,
+    TABLE_COMPACT_MIN_COL_WIDTH
+  );
+  const rowHeights = distributeTableTrackSizes(
+    table.rowHeights,
+    safeTargetH,
+    TABLE_COMPACT_MIN_ROW_HEIGHT
   );
 
   return recomputeTableOuterSize({

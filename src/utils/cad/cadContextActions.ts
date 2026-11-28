@@ -89,7 +89,8 @@ export function getSelectionContextCapabilities(
   const canAlign = unlocked.length >= 2;
   const canDistribute = unlocked.length >= 3;
 
-  const canDimension = selectedObjects.some(isDimensionCompatible);
+  // V1.11.8-17: Acotar aplica únicamente a un elemento individual; se oculta en selección múltiple
+  const canDimension = isSingle && isDimensionCompatible(selectedObjects[0]);
   const canRadialDim = isSingle && isRadialDimensionCompatible(selectedObjects[0]);
 
   const canStyleColor = unlocked.some(isColorStyleCompatible);

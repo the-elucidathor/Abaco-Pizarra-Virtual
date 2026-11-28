@@ -58,11 +58,14 @@ import {
 import {
   MAX_SHEETS_PER_BOARD,
   computeCenteredViewportForPage,
+  computePageFrameGeometry,
+  findClosestSheetIndexForWorldY,
   findSheetIndexForObject,
   getSheetStridePx,
   getSheetY,
   getTotalSheetsHeight,
   isFixedSizeBoard,
+  normalizarAjustesHoja,
   normalizarHojas,
 } from './utils/boardSizes';
 import {
@@ -122,7 +125,9 @@ import { getRememberedTextLang } from './utils/spellcheck/personalDictionary';
 import { clamp, formatDateTime, getObjectsBoundingBox, uid } from './utils/id';
 import {
   type MathCursor,
+  type MathSelectionRange,
   applySnippetAtCursor,
+  applyStyleToLatexSelection,
   getInitialEditCursor,
   jumpToNextSlotCursor,
 } from './utils/latexEditorEngine';
@@ -178,6 +183,7 @@ import type { CadCatalogItem } from './utils/cad/cadCommandCatalog';
 import type { CanvasContextActions } from './components/CanvasContextMenu';
 import { computeSweptEraserResult } from './utils/partialEraser';
 import {
+  deriveCustomThemeTokens,
   getEffectiveBoardColors,
   isDarkThemePreset,
   resolveAdaptiveDrawColorForBoardBg,
@@ -186,6 +192,15 @@ import { PerfMonitorHud } from './components/PerfMonitorHud';
 import { isOptEnabled } from './utils/optFlags';
 import { publishCursorWorld } from './utils/cursorBus';
 import { type BoardHistorySnapshot, captureBoardHistorySnapshot } from './utils/historySnapshot';
+import {
+  cloneClipboardEntriesForPaste,
+  getInternalClipboard,
+  getInternalClipboardMeta,
+  hasInternalClipboard,
+  markInternalClipboardBlurred,
+  markSystemClipboardPreferred,
+  setInternalClipboard,
+} from './utils/internalClipboard';
 
 // OPT: 1.1 — Carga diferida del lanzador rápido de comandos
 const QuickCommandHud = lazy(() =>
@@ -267,7 +282,8 @@ export default function App() {
     const initialInk = getEffectiveBoardColors(
       initSettings.theme,
       initSettings.canvasBgMode,
-      initSettings.canvasBgCustomColor
+      initSettings.canvasBgCustomColor,
+      initSettings.customThemeColors
     ).defaultInk;
     return {
       ...DEFAULT_TOOL_OPTIONS,
@@ -280,26 +296,20 @@ export default function App() {
   const [cadSession, setCadSession] = useState<CadSessionState>(INITIAL_CAD_SESSION);
   const [cadInputValue, setCadInputValue] = useState('');
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
-  const [clipboard, setClipboard] = useState<{
-    objects: CanvasObject[];
-    groups: GroupRecord[];
-  }>({ objects: [], groups: [] });
-  const clipboardRef = useRef(clipboard);
-  clipboardRef.current = clipboard;
-  const clipSeqRef = useRef(0);
-  const internalClipboardMetaRef = useRef<{
-    token: string;
-    copiedAt: number;
-    osCleared: boolean;
-    preferInternal: boolean;
-    blurredSinceCopy: boolean;
-  }>({
-    token: '',
-    copiedAt: 0,
-    osCleared: false,
-    preferInternal: false,
-    blurredSinceCopy: false,
-  });
+  // V1.11.8-1 / V1.11.8-9: Portapapeles interno persistente a nivel de módulo y rastreo de puntero por ref sin useState
+  const [clipboardRevision, setClipboardRevision] = useState(0);
+  const canPasteInternal = useMemo(() => {
+    void clipboardRevision;
+    return hasInternalClipboard();
+  }, [clipboardRevision]);
+  const lastCanvasCursorWorldRef = useRef<Point2D | null>(null);
+  const contextMenuWorldRef = useRef<Point2D | null>(null);
+  const handleCursorWorldChange = useCallback((pt: Point2D | null) => {
+    lastCanvasCursorWorldRef.current = pt;
+  }, []);
+  const handleContextMenuWorldPos = useCallback((pt: Point2D | null) => {
+    contextMenuWorldRef.current = pt;
+  }, []);
   const lastSeenImageDigestRef = useRef<{ digest: string; seenAt: number } | null>(null);
   const [cursorWorld, setCursorWorld] = useState<Point2D>({ x: 0, y: 0 });
   const [saveStatus, setSaveStatus] = useState<'saved' | 'saving' | 'unsaved'>('saved');
@@ -333,6 +343,9 @@ export default function App() {
     cols: number;
   } | null>(null);
   const [equationCursor, setEquationCursor] = useState<MathCursor>({ path: [], offset: 0 });
+  // V1.11.8-7d / V1.11.8-8: Subselección en editor de ecuaciones e instantánea para vista previa de color en cinta
+  const [equationSelection, setEquationSelection] = useState<MathSelectionRange | null>(null);
+  const eqRibbonColorSnapRef = useRef<CanvasObject[] | null>(null);
   const [areaExportMode, setAreaExportMode] = useState(false);
   const [exportAreaRect, setExportAreaRect] = useState<ExportCropRect | null>(null);
   const [arrayModal, setArrayModal] = useState<{
@@ -409,11 +422,12 @@ export default function App() {
   const viewportPersistTimerRef = useRef<number | null>(null);
   const viewportAnimRafRef = useRef<number | null>(null);
   const prevEffectiveBoardRef = useRef({
-    key: `${settings.theme}|${settings.canvasBgMode}|${settings.canvasBgCustomColor}`,
+    key: `${settings.theme}|${settings.canvasBgMode}|${settings.canvasBgCustomColor}|${settings.customThemeColors?.background ?? ''}|${settings.customThemeColors?.accent ?? ''}|${settings.customThemeColors?.text ?? ''}`,
     defaultInk: getEffectiveBoardColors(
       settings.theme,
       settings.canvasBgMode,
-      settings.canvasBgCustomColor
+      settings.canvasBgCustomColor,
+      settings.customThemeColors
     ).defaultInk,
   });
   const eraserSnapshotRef = useRef<{
@@ -422,19 +436,40 @@ export default function App() {
   } | null>(null);
   const eraserModifiedRef = useRef(false);
 
-  // Sincroniza tema de interfaz, color efectivo del lienzo y tintas predeterminadas con contraste automático
+  // V1.11.8-14: Sincroniza tema de interfaz (incluyendo tokens CSS dinámicos del tema Personalizado con contraste WCAG),
+  // color efectivo del lienzo y tintas predeterminadas.
   useEffect(() => {
-    document.documentElement.dataset.theme = settings.theme;
-    document.documentElement.classList.toggle('dark', isDarkThemePreset(settings.theme));
+    const rootEl = document.documentElement;
+    rootEl.dataset.theme = settings.theme;
+    rootEl.classList.toggle(
+      'dark',
+      isDarkThemePreset(settings.theme, settings.customThemeColors)
+    );
+
+    const customTokens = deriveCustomThemeTokens(settings.customThemeColors);
+    const cssVarKeys = Object.keys(customTokens.cssVars) as Array<
+      keyof typeof customTokens.cssVars
+    >;
+    if (settings.theme === 'custom') {
+      for (const k of cssVarKeys) {
+        rootEl.style.setProperty(k, customTokens.cssVars[k]);
+      }
+    } else {
+      for (const k of cssVarKeys) {
+        rootEl.style.removeProperty(k);
+      }
+    }
+
     saveSettings(settings);
 
-    const nextKey = `${settings.theme}|${settings.canvasBgMode}|${settings.canvasBgCustomColor}`;
+    const nextKey = `${settings.theme}|${settings.canvasBgMode}|${settings.canvasBgCustomColor}|${settings.customThemeColors?.background ?? ''}|${settings.customThemeColors?.accent ?? ''}|${settings.customThemeColors?.text ?? ''}`;
     if (prevEffectiveBoardRef.current.key !== nextKey) {
       const prevInk = prevEffectiveBoardRef.current.defaultInk;
       const nextBoardColors = getEffectiveBoardColors(
         settings.theme,
         settings.canvasBgMode,
-        settings.canvasBgCustomColor
+        settings.canvasBgCustomColor,
+        settings.customThemeColors
       );
       prevEffectiveBoardRef.current = {
         key: nextKey,
@@ -585,8 +620,18 @@ export default function App() {
   }, [project]);
 
   const selectedObjects = useMemo(() => {
-    return activeBoard.objects.filter((o) => selectedIds.includes(o.id));
+    if (selectedIds.length === 0) return [];
+    const selectedSet = new Set(selectedIds);
+    return activeBoard.objects.filter((o) => selectedSet.has(o.id));
   }, [activeBoard.objects, selectedIds]);
+
+  const canvasEditingTableCell = useMemo(
+    () =>
+      editingTableCell
+        ? { r: editingTableCell.r, c: editingTableCell.c }
+        : null,
+    [editingTableCell]
+  );
 
   const editingEquation = useMemo(() => {
     if (!editingEquationId) return null;
@@ -602,6 +647,11 @@ export default function App() {
       setActiveInlineEquation(null);
     }
   }, [activeInlineEquation, editingTextId]);
+
+  useEffect(() => {
+    setEquationSelection(null);
+    eqRibbonColorSnapRef.current = null;
+  }, [editingEquationId]);
 
   const inlineRibbonEquation = useMemo<EquationObject | null>(() => {
     if (!activeInlineEquation || editingEquation) return null;
@@ -1057,6 +1107,24 @@ export default function App() {
     []
   );
 
+  // V1.11.8-8: Registra una sola entrada de historial cuando termina la vista previa de color en texto enriquecido
+  const handlePushTextParagraphsSnapshot = useCallback(
+    (objId: string, snapshotParagraphs: TextObject['paragraphs']) => {
+      try {
+        if (!snapshotParagraphs) return;
+        const snapObjs = activeBoard.objects.map((o) =>
+          o.id === objId && o.type === 'text'
+            ? syncTextObjectFromParagraphs(o, snapshotParagraphs)
+            : o
+        );
+        pushHistory(snapObjs, activeBoard.groups);
+      } catch {
+        // noop
+      }
+    },
+    [activeBoard.objects, activeBoard.groups, pushHistory]
+  );
+
   // Repara un cuadro de texto dañado de forma aislada sin perder el resto del tablero
   const handleRepairTextObject = useCallback(
     (id: string) => {
@@ -1075,6 +1143,36 @@ export default function App() {
       setErrorToast('Tabla reparada correctamente.');
     },
     [handleUpdateObjects]
+  );
+
+  // OPT: 2.6 — Mantiene estables las referencias de callbacks que atraviesan StaticObjectsLayer hacia cada CanvasObjectItem
+  const handleSetEditingTableCell = useCallback(
+    (tableId: string | null, cell: TableCellCoord | null) => {
+      setEditingTableCell(
+        tableId && cell ? { objectId: tableId, r: cell.r, c: cell.c } : null
+      );
+    },
+    []
+  );
+
+  const handleOpenEquationModal = useCallback((eq: EquationObject) => {
+    setEditingEquationId(null);
+    setEquationSelection(null);
+    setEquationModal({ open: true, editing: eq });
+  }, []);
+
+  const handleRequestTextEquationEditor = useCallback(
+    (objId: string, req: InlineEquationRequest) => {
+      setInlineTextEquationModal({ objId, req });
+    },
+    []
+  );
+
+  const handleActiveInlineTextEquationChange = useCallback(
+    (objId: string, session: ActiveInlineEquationSession | null) => {
+      setActiveInlineEquation(session ? { objId, session } : null);
+    },
+    []
   );
 
   const handleApplyCutChanges = useCallback(
@@ -1200,79 +1298,161 @@ export default function App() {
     [mutateActiveBoard]
   );
 
-  const syncInternalClipboardState = useCallback(
-    (snap: { objects: CanvasObject[]; groups: GroupRecord[] }) => {
-      clipboardRef.current = snap;
-      setClipboard(snap);
-      const token = `__ABACO_CLIP_V1__:${++clipSeqRef.current}:${Date.now()}`;
-      internalClipboardMetaRef.current = {
-        token,
-        copiedAt: Date.now(),
-        osCleared: false,
-        preferInternal: true,
-        blurredSinceCopy: false,
-      };
-      if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
-        navigator.clipboard
-          .writeText(token)
-          .then(() => {
-            if (internalClipboardMetaRef.current.token === token) {
-              internalClipboardMetaRef.current.osCleared = true;
-            }
-          })
-          .catch(() => {
-            // Si el entorno bloquea writeText, preferInternal + control de foco/digest resuelve el pegado
-          });
-      }
-    },
-    []
-  );
-
+  // V1.11.8-1: Copia y corte sobre almacenamiento persistente de módulo (sin escribir en navigator.clipboard)
   const handleCopy = useCallback(() => {
     if (selectedObjects.length === 0) return;
-    // OPT: 2.7
-    syncInternalClipboardState(
-      captureBoardHistorySnapshot(selectedObjects, ensureGroupsArray(activeBoard.groups))
-    );
-  }, [selectedObjects, activeBoard.groups, syncInternalClipboardState]);
+    try {
+      const snap = captureBoardHistorySnapshot(
+        selectedObjects,
+        ensureGroupsArray(activeBoard.groups)
+      );
+      const res = setInternalClipboard(snap.objects, snap.groups);
+      setClipboardRevision((r) => r + 1);
+      if (res.skippedCount > 0) {
+        setNoticeToast(
+          res.storedCount === 0
+            ? 'No se pudieron copiar los recursos seleccionados porque ya no están disponibles.'
+            : `Se omitieron ${res.skippedCount} recurso(s) no válidos al copiar.`
+        );
+      }
+    } catch {
+      setErrorToast('No se pudieron copiar los elementos seleccionados.');
+    }
+  }, [selectedObjects, activeBoard.groups]);
 
   const handleCut = useCallback(() => {
     if (selectedObjects.length === 0) return;
-    // OPT: 2.7
-    syncInternalClipboardState(
-      captureBoardHistorySnapshot(selectedObjects, ensureGroupsArray(activeBoard.groups))
-    );
-    handleDeleteObjects(selectedObjects.map((o) => o.id));
-  }, [selectedObjects, activeBoard.groups, handleDeleteObjects, syncInternalClipboardState]);
+    try {
+      const snap = captureBoardHistorySnapshot(
+        selectedObjects,
+        ensureGroupsArray(activeBoard.groups)
+      );
+      const res = setInternalClipboard(snap.objects, snap.groups);
+      setClipboardRevision((r) => r + 1);
+      if (res.skippedCount > 0) {
+        setNoticeToast(
+          res.storedCount === 0
+            ? 'No se pudieron cortar los recursos seleccionados porque ya no están disponibles.'
+            : `Se omitieron ${res.skippedCount} recurso(s) no válidos al cortar.`
+        );
+      }
+      handleDeleteObjects(selectedObjects.map((o) => o.id));
+    } catch {
+      setErrorToast('No se pudieron cortar los elementos seleccionados.');
+    }
+  }, [selectedObjects, activeBoard.groups, handleDeleteObjects]);
 
+  // V1.11.8-1 / V1.11.8-9: Pegado centrado en el cursor/clic contextual con límites de hoja fija y una sola entrada de historial
   const handlePaste = useCallback(
-    (customSource?: { objects: CanvasObject[]; groups: GroupRecord[] }) => {
-      const src = customSource || clipboardRef.current;
-      if (src.objects.length === 0) return;
-      pushHistory(activeBoard.objects, activeBoard.groups);
-      const maxZ = activeBoard.objects.reduce((m, o) => Math.max(m, o.zIndex), 0);
-      const { clones, newGroups } = cloneObjectsWithGroupTree(
-        src.objects,
-        src.groups,
-        24,
-        24,
-        activeBoard.activeLayerId,
-        maxZ + 1
-      );
-      const normalizedClones = clones.map((c) =>
-        c.type === 'table' ? normalizarTabla(c) : c
-      );
-      mutateActiveBoard((b) => ({
-        ...b,
-        objects: recomputeAssociativeDimensions([...b.objects, ...normalizedClones], cadConfig),
-        groups: [...ensureGroupsArray(b.groups), ...newGroups],
-      }));
-      setSelectedIds(normalizedClones.map((c) => c.id));
+    (
+      customSource?: { objects: CanvasObject[]; groups: GroupRecord[] },
+      options?: { mode?: 'paste' | 'duplicate'; targetWorld?: Point2D | null }
+    ) => {
+      try {
+        const src = customSource || getInternalClipboard();
+        if (!src || src.objects.length === 0) return;
+
+        const isDuplicate = options?.mode === 'duplicate';
+        const srcBox = getObjectsWorldBoundingBox(src.objects);
+        let deltaX = 24;
+        let deltaY = 24;
+
+        if (!isDuplicate && srcBox) {
+          const rect = stageRef.current?.getBoundingClientRect();
+          const fallbackCenter: Point2D = {
+            x: ((rect?.width ?? 900) / 2 - activeBoard.viewport.panX) / activeBoard.viewport.zoom,
+            y: ((rect?.height ?? 600) / 2 - activeBoard.viewport.panY) / activeBoard.viewport.zoom,
+          };
+          const targetWorld =
+            options?.targetWorld ??
+            contextMenuWorldRef.current ??
+            lastCanvasCursorWorldRef.current ??
+            fallbackCenter;
+          contextMenuWorldRef.current = null;
+
+          deltaX = targetWorld.x - (srcBox.x + srcBox.width / 2);
+          deltaY = targetWorld.y - (srcBox.y + srcBox.height / 2);
+
+          if (
+            isFixedSizeBoard(activeBoard) &&
+            activeBoard.pageWidth &&
+            activeBoard.pageHeight
+          ) {
+            const sheets = normalizarHojas(activeBoard);
+            const sheetIdx = findClosestSheetIndexForWorldY(
+              targetWorld.y,
+              sheets.length,
+              activeBoard.pageHeight
+            );
+            const sheetTop = getSheetY(sheetIdx, activeBoard.pageHeight);
+            const sheetSettings = normalizarAjustesHoja(activeBoard);
+            let minX = 0;
+            let minY = sheetTop;
+            let maxX = activeBoard.pageWidth;
+            let maxY = sheetTop + activeBoard.pageHeight;
+
+            if (sheetSettings.showFrame && sheetSettings.clipToFrame) {
+              const frame = computePageFrameGeometry(
+                activeBoard.pageWidth,
+                activeBoard.pageHeight,
+                activeBoard.gridSize || 28,
+                sheetSettings.frameMarginMm,
+                activeBoard.backgroundPattern
+              );
+              minX = frame.x;
+              minY = sheetTop + frame.y;
+              maxX = frame.x + frame.width;
+              maxY = sheetTop + frame.y + frame.height;
+            }
+
+            let nextX = srcBox.x + deltaX;
+            let nextY = srcBox.y + deltaY;
+            if (maxX - minX >= srcBox.width) {
+              nextX = clamp(nextX, minX, maxX - srcBox.width);
+            } else {
+              nextX = minX;
+            }
+            if (maxY - minY >= srcBox.height) {
+              nextY = clamp(nextY, minY, maxY - srcBox.height);
+            } else {
+              nextY = minY;
+            }
+
+            deltaX = nextX - srcBox.x;
+            deltaY = nextY - srcBox.y;
+          }
+        }
+
+        const maxZ = activeBoard.objects.reduce((m, o) => Math.max(m, o.zIndex), 0);
+        const { clones, newGroups, skippedCount } = cloneClipboardEntriesForPaste(src, {
+          deltaX,
+          deltaY,
+          layerId: activeBoard.activeLayerId,
+          startZIndex: maxZ + 1,
+        });
+
+        if (skippedCount > 0) {
+          setNoticeToast(
+            clones.length === 0
+              ? 'Los recursos copiados ya no están disponibles para pegar.'
+              : `Se omitieron ${skippedCount} recurso(s) no válidos al pegar.`
+          );
+        }
+        if (clones.length === 0) return;
+
+        pushHistory(activeBoard.objects, activeBoard.groups);
+        mutateActiveBoard((b) => ({
+          ...b,
+          objects: recomputeAssociativeDimensions([...b.objects, ...clones], cadConfig),
+          groups: [...ensureGroupsArray(b.groups), ...newGroups],
+        }));
+        setSelectedIds(clones.map((c) => c.id));
+      } catch {
+        setErrorToast('No se pudieron pegar los elementos seleccionados.');
+      }
     },
     [
-      activeBoard.activeLayerId,
-      activeBoard.objects,
-      activeBoard.groups,
+      activeBoard,
       cadConfig,
       mutateActiveBoard,
       pushHistory,
@@ -1281,10 +1461,13 @@ export default function App() {
 
   const handleDuplicate = useCallback(() => {
     if (selectedObjects.length === 0) return;
-    handlePaste({
-      objects: selectedObjects,
-      groups: ensureGroupsArray(activeBoard.groups),
-    });
+    handlePaste(
+      {
+        objects: selectedObjects,
+        groups: ensureGroupsArray(activeBoard.groups),
+      },
+      { mode: 'duplicate' }
+    );
   }, [selectedObjects, activeBoard.groups, handlePaste]);
 
   const handleSelectAll = useCallback(() => {
@@ -2291,20 +2474,21 @@ export default function App() {
 
   const startLiveEquation = useCallback(() => {
     const c = getViewportCenterWorld();
+    // V1.11.8-7c: Ecuaciones nuevas con tamaño 12 por defecto sin afectar las existentes
     const newEq: EquationObject = {
       id: uid('eq'),
       type: 'equation',
       layerId: activeBoard.activeLayerId,
-      x: c.x - 110,
-      y: c.y - 38,
-      width: 220,
-      height: 76,
+      x: c.x - 70,
+      y: c.y - 24,
+      width: 140,
+      height: 48,
       rotation: 0,
       opacity: 1,
       locked: false,
       zIndex: activeBoard.objects.reduce((m, o) => Math.max(m, o.zIndex), 0) + 1,
       latex: '\\square',
-      fontSize: 24,
+      fontSize: 12,
       color: toolOptions.textColor || '#0f172a',
       backgroundColor: 'transparent',
     };
@@ -2313,6 +2497,7 @@ export default function App() {
     setEditingTextId(null);
     setAreaExportMode(false);
     setEquationCursor({ path: [], offset: 0 });
+    setEquationSelection(null);
     setEditingEquationId(newEq.id);
     setActiveTool('select');
   }, [
@@ -2338,7 +2523,8 @@ export default function App() {
       locked: false,
       zIndex: activeBoard.objects.reduce((m, o) => Math.max(m, o.zIndex), 0) + 1,
       content: 'Cuadro de texto',
-      fontFamily: 'sans',
+      // V1.11.8-4: Fuente por defecto Times New Roman para cuadros de texto nuevos
+      fontFamily: 'times',
       fontSize: toolOptions.textFontSize,
       bold: false,
       italic: false,
@@ -2358,7 +2544,7 @@ export default function App() {
           underline: false,
           fontSize: toolOptions.textFontSize,
           color: toolOptions.textColor,
-          fontFamily: 'sans',
+          fontFamily: 'times',
         },
         'left'
       ),
@@ -2651,14 +2837,13 @@ export default function App() {
     [activeBoard.activeLayerId, activeBoard.objects, getViewportCenterWorld, handleAddObject]
   );
 
-  // Sincronización de eventos externos del portapapeles (capturas PNG internas o cambio de ventana)
+  // V1.11.8-1: Sincronización de eventos externos del portapapeles (capturas PNG internas o cambio de ventana)
   useEffect(() => {
     const onWindowBlur = () => {
-      internalClipboardMetaRef.current.blurredSinceCopy = true;
+      markInternalClipboardBlurred();
     };
     const onSystemClipboardUpdated = () => {
-      internalClipboardMetaRef.current.preferInternal = false;
-      internalClipboardMetaRef.current.osCleared = false;
+      markSystemClipboardPreferred();
     };
     window.addEventListener('blur', onWindowBlur);
     window.addEventListener('abaco:system-clipboard-updated', onSystemClipboardUpdated);
@@ -2680,15 +2865,9 @@ export default function App() {
         return;
       }
 
-      const meta = internalClipboardMetaRef.current;
-      const internalClip = clipboardRef.current;
+      const meta = getInternalClipboardMeta();
+      const internalClip = getInternalClipboard();
       const plainText = (e.clipboardData?.getData('text/plain') || '').trim();
-
-      if (plainText && meta.token && plainText === meta.token && internalClip.objects.length > 0) {
-        e.preventDefault();
-        handlePaste(internalClip);
-        return;
-      }
 
       const items = e.clipboardData?.items;
       const imageFiles: File[] = [];
@@ -2709,26 +2888,28 @@ export default function App() {
           lastSeenImageDigestRef.current !== null &&
           lastSeenImageDigestRef.current.digest === digest &&
           lastSeenImageDigestRef.current.seenAt < meta.copiedAt;
-        const shouldPreferInternalOverStaleScreenshot =
-          internalClip.objects.length > 0 &&
-          meta.preferInternal &&
-          ((!meta.osCleared && !meta.blurredSinceCopy) || seenBeforeCopy);
+        const shouldPreferInternalOverStaleScreenshot = Boolean(
+          internalClip &&
+            internalClip.objects.length > 0 &&
+            meta.preferInternal &&
+            (!meta.blurredSinceCopy || seenBeforeCopy)
+        );
 
-        if (shouldPreferInternalOverStaleScreenshot) {
-          handlePaste(internalClip);
+        if (shouldPreferInternalOverStaleScreenshot && internalClip) {
+          handlePaste(internalClip, { mode: 'paste' });
           return;
         }
 
         lastSeenImageDigestRef.current = { digest, seenAt: Date.now() };
-        internalClipboardMetaRef.current.preferInternal = false;
-        internalClipboardMetaRef.current.osCleared = false;
-        await processIncomingFiles(imageFiles);
+        markSystemClipboardPreferred();
+        const targetPt = lastCanvasCursorWorldRef.current;
+        await processIncomingFiles(imageFiles, targetPt?.x, targetPt?.y);
         return;
       }
 
-      if (internalClip.objects.length > 0 && (meta.preferInternal || !plainText)) {
+      if (internalClip && internalClip.objects.length > 0 && (meta.preferInternal || !plainText)) {
         e.preventDefault();
-        handlePaste(internalClip);
+        handlePaste(internalClip, { mode: 'paste' });
       }
     };
     window.addEventListener('paste', onPaste);
@@ -3149,6 +3330,7 @@ export default function App() {
   const contextActions: CanvasContextActions = useMemo(
     () => ({
       onCopy: handleCopy,
+      onPaste: () => handlePaste(undefined, { mode: 'paste' }),
       onDuplicate: handleDuplicate,
       onCut: handleCut,
       onDelete: () => handleDeleteObjects(selectedIds),
@@ -3193,8 +3375,12 @@ export default function App() {
                 )
               );
             }
-            if (o.type === 'stroke' || o.type === 'equation' || o.type === 'dimension') {
+            if (o.type === 'stroke' || o.type === 'equation') {
               return { ...o, color };
+            }
+            // V1.11.8-17: DimensionObject usa strokeColor y textColor
+            if (o.type === 'dimension') {
+              return { ...o, strokeColor: color, textColor: color };
             }
             if (o.type === 'shape' || o.type === 'line') {
               return { ...o, strokeColor: color };
@@ -3368,7 +3554,7 @@ export default function App() {
           onOpenSettings={() => setShowSettingsModal(true)}
           onCut={handleCut}
           onCopy={handleCopy}
-          onPaste={() => handlePaste()}
+          onPaste={() => handlePaste(undefined, { mode: 'paste' })}
           onDuplicate={handleDuplicate}
           onSelectAll={handleSelectAll}
           onDeleteSelection={() => handleDeleteObjects(selectedIds)}
@@ -3600,6 +3786,99 @@ export default function App() {
             <EquationRibbonBar
               equation={editingEquation}
               placeholderCount={(editingEquation.latex.match(/\\square/g) || []).length}
+              hasSubselection={Boolean(
+                equationSelection && equationSelection.start !== equationSelection.end
+              )}
+              customSwatches={settings.customColorSwatches}
+              onUpdateCustomSwatches={(next) =>
+                setSettings((s) => ({ ...s, customColorSwatches: next }))
+              }
+              onStartColorPreview={() => {
+                eqRibbonColorSnapRef.current = activeBoard.objects;
+              }}
+              onPreviewColor={(color) => {
+                handleUpdateObjects(
+                  [editingEquation.id],
+                  (o) => ({ ...(o as EquationObject), color }),
+                  false
+                );
+              }}
+              onCommitColor={(color) => {
+                const snap = eqRibbonColorSnapRef.current;
+                eqRibbonColorSnapRef.current = null;
+                if (snap) {
+                  pushHistory(snap, activeBoard.groups);
+                  handleUpdateObjects(
+                    [editingEquation.id],
+                    (o) => ({ ...(o as EquationObject), color }),
+                    false
+                  );
+                } else {
+                  handleUpdateObjects(
+                    [editingEquation.id],
+                    (o) => ({ ...(o as EquationObject), color }),
+                    true
+                  );
+                }
+                requestAnimationFrame(() => {
+                  equationInputRef.current?.focus();
+                });
+              }}
+              onCancelColorPreview={() => {
+                const snap = eqRibbonColorSnapRef.current;
+                eqRibbonColorSnapRef.current = null;
+                if (!snap) return;
+                const snapMap = new Map(snap.map((o) => [o.id, o]));
+                handleUpdateObjects(
+                  snap.map((o) => o.id),
+                  (o) => snapMap.get(o.id) ?? o,
+                  false
+                );
+              }}
+              onApplySelectionColor={(color) => {
+                try {
+                  const res = applyStyleToLatexSelection(
+                    editingEquation.latex,
+                    equationCursor,
+                    equationSelection,
+                    { color }
+                  );
+                  handleUpdateObjects(
+                    [editingEquation.id],
+                    (o) => ({ ...(o as EquationObject), latex: res.latex }),
+                    true
+                  );
+                  setEquationCursor(res.cursor);
+                  setEquationSelection(null);
+                  requestAnimationFrame(() => {
+                    equationInputRef.current?.focus();
+                  });
+                } catch {
+                  // noop
+                }
+              }}
+              onApplySelectionRelativeSize={(sizeCmd) => {
+                try {
+                  const res = applyStyleToLatexSelection(
+                    editingEquation.latex,
+                    equationCursor,
+                    equationSelection,
+                    { sizeCmd }
+                  );
+                  handleUpdateObjects(
+                    [editingEquation.id],
+                    (o) => ({ ...(o as EquationObject), latex: res.latex }),
+                    true
+                  );
+                  setEquationCursor(res.cursor);
+                  setEquationSelection(null);
+                  requestAnimationFrame(() => {
+                    equationInputRef.current?.focus();
+                  });
+                } catch {
+                  // noop
+                }
+              }}
               onInsertSnippet={insertEquationSnippet}
               onReplaceLatex={(latex) => {
                 handleUpdateObjects(
@@ -3608,6 +3887,7 @@ export default function App() {
                   true
                 );
                 setEquationCursor(getInitialEditCursor(latex));
+                setEquationSelection(null);
                 requestAnimationFrame(() => {
                   equationInputRef.current?.focus();
                 });
@@ -3626,10 +3906,12 @@ export default function App() {
               onOpenExpandedModal={() => {
                 const eq = editingEquation;
                 setEditingEquationId(null);
+                setEquationSelection(null);
                 setEquationModal({ open: true, editing: eq });
               }}
               onFinish={() => {
                 handleUpdateObjects([editingEquation.id], (o) => o, true);
+                setEquationSelection(null);
                 setEditingEquationId(null);
               }}
             />
@@ -3641,6 +3923,10 @@ export default function App() {
                 placeholderCount={(inlineRibbonEquation.latex.match(/\\square/g) || []).length}
                 inlineMode
                 displayMode={activeInlineEquation.session.displayMode}
+                customSwatches={settings.customColorSwatches}
+                onUpdateCustomSwatches={(next) =>
+                  setSettings((s) => ({ ...s, customColorSwatches: next }))
+                }
                 onToggleDisplayMode={(displayMode) => {
                   activeRichTextEditorRef.current?.updateInlineEquationMeta({ displayMode });
                 }}
@@ -3683,6 +3969,7 @@ export default function App() {
           <CanvasStage
             board={activeBoard}
             theme={settings.theme}
+            customThemeColors={settings.customThemeColors}
             canvasBgMode={settings.canvasBgMode}
             canvasBgCustomColor={settings.canvasBgCustomColor}
             adaptStrokeColorsToCanvasBg={settings.adaptStrokeColorsToCanvasBg}
@@ -3695,14 +3982,11 @@ export default function App() {
             editingEquationId={editingEquationId}
             editingDimensionId={editingDimensionId}
             editingTableId={editingTableCell?.objectId ?? null}
-            editingTableCell={
-              editingTableCell
-                ? { r: editingTableCell.r, c: editingTableCell.c }
-                : null
-            }
+            editingTableCell={canvasEditingTableCell}
             pendingTableSize={pendingTableSize}
             equationInputRef={equationInputRef}
             equationCursor={equationCursor}
+            equationSelection={equationSelection}
             areaExportMode={areaExportMode}
             arrayPickMode={arrayPickMode}
             livePathArrayDraft={livePathArrayDraft}
@@ -3712,21 +3996,16 @@ export default function App() {
             onSetEditingTextId={setEditingTextId}
             onSetEditingEquationId={setEditingEquationId}
             onSetEditingDimensionId={setEditingDimensionId}
-            onSetEditingTableCell={(tableId, cell: TableCellCoord | null) => {
-              setEditingTableCell(
-                tableId && cell ? { objectId: tableId, r: cell.r, c: cell.c } : null
-              );
-            }}
+            onSetEditingTableCell={handleSetEditingTableCell}
             onPlacePendingTable={(worldPt) => {
               if (!pendingTableSize) return;
               handleInsertTable(pendingTableSize.rows, pendingTableSize.cols, 'center', worldPt);
             }}
             onCancelPendingTable={() => setPendingTableSize(null)}
             onEquationCursorChange={setEquationCursor}
-            onOpenEquationModal={(eq) => {
-              setEditingEquationId(null);
-              setEquationModal({ open: true, editing: eq });
-            }}
+            onEquationSelectionChange={setEquationSelection}
+            onPushTextParagraphsSnapshot={handlePushTextParagraphsSnapshot}
+            onOpenEquationModal={handleOpenEquationModal}
             onCompleteAreaExport={(rect) => {
               setExportAreaRect(rect);
               setAreaExportMode(false);
@@ -3802,12 +4081,8 @@ export default function App() {
             }
             activeRichTextEditorRef={activeRichTextEditorRef}
             onRichTextSelectionSummaryChange={handleRichTextSelectionSummaryChange}
-            onRequestTextEquationEditor={(objId, req) =>
-              setInlineTextEquationModal({ objId, req })
-            }
-            onActiveInlineTextEquationChange={(objId, session) => {
-              setActiveInlineEquation(session ? { objId, session } : null);
-            }}
+            onRequestTextEquationEditor={handleRequestTextEquationEditor}
+            onActiveInlineTextEquationChange={handleActiveInlineTextEquationChange}
             onRepairTextObject={handleRepairTextObject}
             onRepairTableObject={handleRepairTableObject}
             spellcheckEnabled={settings.spellcheckEnabled}
@@ -3849,6 +4124,9 @@ export default function App() {
                 // Ignorar error de almacenamiento local
               }
             }}
+            onCursorWorldChange={handleCursorWorldChange}
+            onContextMenuWorldPos={handleContextMenuWorldPos}
+            canPaste={canPasteInternal}
           />
 
           {!cleanWorkMode && !bottomBarsCollapsed && (
@@ -3916,11 +4194,23 @@ export default function App() {
               onUpdateSettings={setSettings}
               onUpdateToolOptions={(patch) => setToolOptions((prev) => ({ ...prev, ...patch }))}
               onUpdateBoardMeta={(patch) => {
-                // Sincroniza el interruptor de SNAP entre Propiedades y la barra inferior CAD
-                if (patch.snapToGrid !== undefined) {
+                // V1.11.8-15: Normaliza gridSize entre 8 y 100 px y sincroniza el paso SNAP cuando corresponde
+                const normalizedPatch: Partial<Board> =
+                  patch.gridSize !== undefined && Number.isFinite(patch.gridSize)
+                    ? {
+                        ...patch,
+                        gridSize: Math.max(8, Math.min(100, Math.round(patch.gridSize))),
+                      }
+                    : patch;
+                if (normalizedPatch.snapToGrid !== undefined || normalizedPatch.gridSize !== undefined) {
                   setCadConfig((prev) => ({
                     ...prev,
-                    gridSnap: Boolean(patch.snapToGrid),
+                    ...(normalizedPatch.snapToGrid !== undefined
+                      ? { gridSnap: Boolean(normalizedPatch.snapToGrid) }
+                      : {}),
+                    ...(normalizedPatch.gridSize !== undefined && prev.unit === 'px'
+                      ? { snapStep: normalizedPatch.gridSize }
+                      : {}),
                   }));
                 }
                 const rect = stageRef.current?.getBoundingClientRect();
@@ -3928,7 +4218,7 @@ export default function App() {
                   const prevFixed = isFixedSizeBoard(b);
                   const prevPageW = b.pageWidth ?? 816;
                   const prevPageH = b.pageHeight ?? 1056;
-                  const next: Board = { ...b, ...patch };
+                  const next: Board = { ...b, ...normalizedPatch };
                   const nextFixed = isFixedSizeBoard(next);
                   const sheets = nextFixed ? normalizarHojas(next) : undefined;
                   if (sheets) {
@@ -3981,7 +4271,10 @@ export default function App() {
                   return next;
                 });
               }}
-              onUpdateObjects={(ids, updater) => handleUpdateObjects(ids, updater, true)}
+              onUpdateObjects={handleUpdateObjects}
+              onPushHistorySnapshot={(snapshotObjects) =>
+                pushHistory(snapshotObjects, activeBoard.groups)
+              }
               onSelectIds={setSelectedIds}
               onStartEditingText={(id) => {
                 setSelectedIds([id]);

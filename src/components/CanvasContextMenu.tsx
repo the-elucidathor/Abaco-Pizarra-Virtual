@@ -9,6 +9,7 @@ import {
   Check,
   ChevronDown,
   ChevronRight,
+  ClipboardPaste,
   Compass,
   Copy,
   CopyPlus,
@@ -64,6 +65,7 @@ export interface SelectionScreenRect {
 
 export interface CanvasContextActions {
   onCopy: () => void;
+  onPaste?: () => void;
   onDuplicate: () => void;
   onCut: () => void;
   onDelete: () => void;
@@ -116,6 +118,7 @@ interface CanvasContextMenuProps {
   bottomBarsCollapsed: boolean;
   autoTransparentPanels: boolean;
   cleanWorkMode: boolean;
+  canPaste?: boolean;
   actions: CanvasContextActions;
 }
 
@@ -370,6 +373,7 @@ export const CanvasContextMenu: React.FC<CanvasContextMenuProps> = React.memo(({
   bottomBarsCollapsed,
   autoTransparentPanels,
   cleanWorkMode,
+  canPaste = false,
   actions,
 }) => {
   const [menuOpen, setMenuOpen] = useState(false);
@@ -600,6 +604,21 @@ export const CanvasContextMenu: React.FC<CanvasContextMenuProps> = React.memo(({
               </span>
               <span className="text-[10px] text-slate-400">Ctrl+X</span>
             </button>
+            {canPaste && actions.onPaste && (
+              <button
+                type="button"
+                onMouseEnter={() => setActiveSubmenu(null)}
+                onClick={() => runAction(() => actions.onPaste?.())}
+                title="Pegar aquí"
+                className={itemBtnCls}
+              >
+                <span className="flex items-center gap-2">
+                  <ClipboardPaste className="w-3.5 h-3.5 opacity-75" />
+                  <span>Pegar aquí</span>
+                </span>
+                <span className="text-[10px] text-slate-400">Ctrl+V</span>
+              </button>
+            )}
             <button
               type="button"
               onMouseEnter={() => setActiveSubmenu(null)}
@@ -1359,6 +1378,23 @@ export const CanvasContextMenu: React.FC<CanvasContextMenuProps> = React.memo(({
               quickPlacement.menuAlignRight ? 'right-0' : 'left-0'
             } p-1.5 rounded-xl border theme-surface shadow-2xl backdrop-blur-md space-y-0.5`}
           >
+            {canPaste && actions.onPaste && (
+              <>
+                <button
+                  type="button"
+                  onMouseEnter={() => setActiveSubmenu(null)}
+                  onClick={() => runAction(() => actions.onPaste?.())}
+                  className={itemBtnCls}
+                >
+                  <span className="flex items-center gap-2">
+                    <ClipboardPaste className="w-3.5 h-3.5 opacity-75" />
+                    <span>Pegar aquí</span>
+                  </span>
+                  <span className="text-[10px] text-slate-400">Ctrl+V</span>
+                </button>
+                <div className="my-1 border-t theme-border" />
+              </>
+            )}
             {/* 1. Dibujo */}
             <div
               className="relative"

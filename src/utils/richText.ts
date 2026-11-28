@@ -741,9 +741,15 @@ export function validateAndNormalizeProject(
         : [];
       const sheetSettings = normalizarAjustesHoja(board);
       const sheets = isFixedSizeBoard(board) ? normalizarHojas(board) : undefined;
+      // V1.11.8-15: Normaliza gridSize en un rango seguro de 8 a 100 px conservando 28 px por defecto
+      const safeGridSize =
+        typeof board.gridSize === 'number' && Number.isFinite(board.gridSize)
+          ? Math.max(8, Math.min(100, Math.round(board.gridSize)))
+          : 28;
       return {
         ...board,
         ...sheetSettings,
+        gridSize: safeGridSize,
         ...(sheets ? { sheets } : {}),
         layers: safeLayers,
         activeLayerId: board.activeLayerId || fallbackLayerId,

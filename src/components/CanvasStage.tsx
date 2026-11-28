@@ -5,6 +5,7 @@ import type {
   Board,
   CanvasBackgroundColorMode,
   CanvasObject,
+  CustomThemeColors,
   DimensionObject,
   DocumentObject,
   EquationObject,
@@ -32,7 +33,11 @@ import {
   type TableCellCoord,
 } from '../utils/tableUtils';
 import { is3DSolidShape, renderShapeSvgElement } from '../utils/shapeRenderer';
-import { type MathCursor, getInitialEditCursor } from '../utils/latexEditorEngine';
+import {
+  type MathCursor,
+  type MathSelectionRange,
+  getInitialEditCursor,
+} from '../utils/latexEditorEngine';
 import {
   type AutoTrimPreview,
   type Solid3DHandleMeta,
@@ -111,11 +116,23 @@ import {
 } from '../utils/cad/cadTracking';
 import { hasOtherObjectEndpointNearPoint, queryObjectsInWorldBox } from '../utils/cad/cadSpatialIndex';
 import { cadDistToWorldDist } from '../utils/cad/cadCoords';
-import { computeDimensionMetrics } from '../utils/cad/cadDimensions';
+import {
+  applyDimensionManualOffsetDrag,
+  getDimensionLineOffset,
+  getDimensionOffsetHandleCursor,
+  getDimensionOffsetHandleWorld,
+  resolveLinearAxisMode,
+} from '../utils/cad/cadDimensions';
 import { DimensionSvgContent } from '../utils/cad/cadDimensionsSvg';
-import { expandSelectionToGroups } from '../utils/cad/cadGroups';
+import { expandSelectionToGroups, getTopLevelGroupId } from '../utils/cad/cadGroups';
+import {
+  findTopTightHitObjectAtPoint,
+  getCachedDimensionMetrics,
+  getObjectTightCachedBounds,
+} from '../utils/cad/cadHitTest';
 import {
   getObjectsWorldBoundingBox,
+  getRotatedObjectWorldBounds,
   rotateCanvasObjectAroundPivot,
   scaleCanvasObjectInBox,
   type WorldBoxRect,
@@ -185,6 +202,8 @@ export function shouldIgnoreCanvasWheel(
 interface CanvasStageProps {
   board: Board;
   theme: ThemePreset;
+  // V1.11.8-14: Colores personalizados del usuario para el tema 'custom'
+  customThemeColors?: CustomThemeColors;
   canvasBgMode: CanvasBackgroundColorMode;
   canvasBgCustomColor: string;
   adaptStrokeColorsToCanvasBg: boolean;
@@ -201,6 +220,8 @@ interface CanvasStageProps {
   pendingTableSize?: { rows: number; cols: number } | null;
   equationInputRef: React.RefObject<HTMLInputElement | null>;
   equationCursor: MathCursor;
+  // V1.11.8-7d: Rango de subselección en editor de ecuaciones
+  equationSelection?: MathSelectionRange | null;
   areaExportMode: boolean;
   arrayPickMode?: 'polar-center' | 'path-object' | 'path-base-point' | null;
   livePathArrayDraft?: PathArraySessionOptions | null;
@@ -214,6 +235,7 @@ interface CanvasStageProps {
   onPlacePendingTable?: (worldPt: Point2D) => void;
   onCancelPendingTable?: () => void;
   onEquationCursorChange: (cursor: MathCursor) => void;
+  onEquationSelectionChange?: (selection: MathSelectionRange | null) => void;
   onOpenEquationModal: (obj: EquationObject) => void;
   onCompleteAreaExport: (rect: { x: number; y: number; width: number; height: number }) => void;
   onCancelAreaExport: () => void;
@@ -251,6 +273,10 @@ interface CanvasStageProps {
   renderQuickCommandHud?: (stageSize: { width: number; height: number }) => React.ReactNode;
   activeRichTextEditorRef?: React.RefObject<RichTextEditorHandle | null>;
   onRichTextSelectionSummaryChange?: (summary: SelectionStyleSummary | null) => void;
+  onPushTextParagraphsSnapshot?: (
+    objId: string,
+    snapshotParagraphs: TextObject['paragraphs']
+  ) => void;
   onRepairTextObject?: (id: string) => void;
   onRepairTableObject?: (id: string) => void;
   onPushHistorySnapshot?: (snapshotObjects: CanvasObject[]) => void;
@@ -273,6 +299,10 @@ interface CanvasStageProps {
   wheelScrollSheets?: boolean;
   hasOpenModal?: boolean;
   onFirstFixedSheetWheel?: () => void;
+  // V1.11.8-9 / V1.11.8-1: Coordenada de puntero por ref para pegado en cursor y pegado en menú contextual
+  onCursorWorldChange?: (worldPos: Point2D | null) => void;
+  onContextMenuWorldPos?: (worldPos: Point2D | null) => void;
+  canPaste?: boolean;
 }
 
 type HandleDir = 'nw' | 'n' | 'ne' | 'e' | 'se' | 's' | 'sw' | 'w';
@@ -294,6 +324,7 @@ interface InteractionState {
     | 'draw-text'
     | 'drag-vertex'
     | 'drag-line-point'
+    | 'drag-dimension-offset'
     | 'draw-cut';
   startClient: Point2D;
   startWorld: Point2D;
@@ -315,6 +346,10 @@ interface InteractionState {
       p2?: Point2D;
       p3?: Point2D;
       offsetPt?: Point2D;
+      dimAnchoredExternal?: boolean;
+      initialDimension?: DimensionObject;
+      dimLockLinearAxis?: 'horizontal' | 'vertical' | 'aligned';
+      dimInitHandle?: Point2D;
       isShape?: boolean;
       flipX?: boolean;
       flipY?: boolean;
@@ -336,6 +371,8 @@ interface InteractionState {
   solidHandle?: Solid3DHandleMeta;
   linePointRole?: 'start' | 'end' | 'control';
   initialLinePoints?: { start: Point2D; end: Point2D; control?: Point2D };
+  initialDimension?: DimensionObject;
+  dimLockLinearAxis?: 'horizontal' | 'vertical' | 'aligned';
 }
 
 function buildSmoothSvgPath(points: Point2D[]): string {
@@ -357,6 +394,7 @@ function buildSmoothSvgPath(points: Point2D[]): string {
 export const CanvasStage: React.FC<CanvasStageProps> = ({
   board,
   theme,
+  customThemeColors,
   canvasBgMode,
   canvasBgCustomColor,
   adaptStrokeColorsToCanvasBg,
@@ -373,6 +411,7 @@ export const CanvasStage: React.FC<CanvasStageProps> = ({
   pendingTableSize,
   equationInputRef,
   equationCursor,
+  equationSelection = null,
   areaExportMode,
   arrayPickMode,
   livePathArrayDraft = null,
@@ -386,6 +425,7 @@ export const CanvasStage: React.FC<CanvasStageProps> = ({
   onPlacePendingTable,
   onCancelPendingTable,
   onEquationCursorChange,
+  onEquationSelectionChange,
   onOpenEquationModal,
   onCompleteAreaExport,
   onCancelAreaExport,
@@ -419,6 +459,7 @@ export const CanvasStage: React.FC<CanvasStageProps> = ({
   renderQuickCommandHud,
   activeRichTextEditorRef,
   onRichTextSelectionSummaryChange,
+  onPushTextParagraphsSnapshot,
   onRepairTextObject,
   onRepairTableObject,
   onPushHistorySnapshot,
@@ -438,6 +479,9 @@ export const CanvasStage: React.FC<CanvasStageProps> = ({
   wheelScrollSheets = true,
   hasOpenModal = false,
   onFirstFixedSheetWheel,
+  onCursorWorldChange,
+  onContextMenuWorldPos,
+  canPaste = false,
 }) => {
   const [interaction, setInteraction] = useState<InteractionState>({
     mode: 'none',
@@ -461,6 +505,9 @@ export const CanvasStage: React.FC<CanvasStageProps> = ({
   const stageSizeRef = useRef({ width: 1200, height: 800 });
   const editingTextareaRef = useRef<HTMLTextAreaElement | null>(null);
   const hasMovedRef = useRef(false);
+  // V1.11.8-7b: Identificadores en arrastre sin provocar setState por cada frame de pointermove
+  const draggingIdsRef = useRef<Set<string> | null>(null);
+  const [draggingIdSet, setDraggingIdSet] = useState<Set<string> | null>(null);
   const preTransformSnapshotRef = useRef<CanvasObject[] | null>(null);
   const resizeTextMinHeightRef = useRef<number>(36);
   const hoverRefSegmentRef = useRef<[Point2D, Point2D] | null>(null);
@@ -514,6 +561,34 @@ export const CanvasStage: React.FC<CanvasStageProps> = ({
   const [printActive, setPrintActive] = useState(false);
   const boardObjectsRef = useRef(board.objects);
   boardObjectsRef.current = board.objects;
+  // V1.11.8-11: Referencias imperativas para guías temporales de alineación durante arrastre (cero useState en pointermove)
+  const dragGuidesSvgRef = useRef<SVGSVGElement | null>(null);
+  const dragGuideXRef = useRef<SVGLineElement | null>(null);
+  const dragGuideYRef = useRef<SVGLineElement | null>(null);
+  const dragGuideSessionRef = useRef<{
+    initBox: WorldBoxRect;
+    candidates: {
+      minX: number;
+      cx: number;
+      maxX: number;
+      minY: number;
+      cy: number;
+      maxY: number;
+    }[];
+  } | null>(null);
+
+  const clearDragAlignmentGuides = useCallback(() => {
+    dragGuideSessionRef.current = null;
+    if (dragGuidesSvgRef.current) {
+      dragGuidesSvgRef.current.style.display = 'none';
+    }
+    if (dragGuideXRef.current) {
+      dragGuideXRef.current.style.display = 'none';
+    }
+    if (dragGuideYRef.current) {
+      dragGuideYRef.current.style.display = 'none';
+    }
+  }, []);
 
   // Sincroniza liveViewportRef cuando no hay interpolación activa (o si cambió externamente tablero/zoom/pan)
   const animState = wheelAnimRef.current;
@@ -557,7 +632,11 @@ export const CanvasStage: React.FC<CanvasStageProps> = ({
     if (!fixedPage) return [];
     return normalizarHojas(board);
   }, [fixedPage?.width, fixedPage?.height, board.sheets]);
-  const gSize = Math.max(12, Number.isFinite(board.gridSize) ? board.gridSize : 28);
+  // V1.11.8-15: Tamaño de cuadrícula ajustable (8 px a 100 px) en todos los fondos y modos
+  const gSize = Math.max(
+    8,
+    Math.min(100, Number.isFinite(board.gridSize) ? Math.round(board.gridSize) : 28)
+  );
   const sheetSettings = useMemo(
     () => normalizarAjustesHoja(board),
     [board.showFrame, board.frameMarginMm, board.clipToFrame]
@@ -620,6 +699,7 @@ export const CanvasStage: React.FC<CanvasStageProps> = ({
     pendingPointerMoveRef.current = null;
     pendingPenSamplesRef.current = [];
     snapHysteresisRef.current = {};
+    clearDragAlignmentGuides();
     clearTrackingSessionState(trackingStateRef.current);
     updateLiveCadCursor(null);
     setInteraction((prev) =>
@@ -1536,26 +1616,28 @@ export const CanvasStage: React.FC<CanvasStageProps> = ({
       e.preventDefault();
       const sx = snapValue(world.x, gSize, board.snapToGrid, snapOffsetX);
       const sy = snapValue(world.y, gSize, board.snapToGrid, getSnapOffsetYForWorld(world.y));
+      // V1.11.8-7c: Ecuaciones nuevas con tamaño 12 y caja proporcionada
       const eqObj: EquationObject = {
         id: uid('eq'),
         type: 'equation',
         layerId: board.activeLayerId,
         x: sx,
         y: sy,
-        width: 220,
-        height: 76,
+        width: 140,
+        height: 48,
         rotation: 0,
         opacity: 1,
         locked: false,
         zIndex: nextZIndex,
         latex: '\\square',
-        fontSize: 24,
+        fontSize: 12,
         color: toolOptions.textColor || '#0f172a',
         backgroundColor: 'transparent',
       };
       onAddObject(eqObj);
       onSelectIds([eqObj.id]);
       onEquationCursorChange({ path: [], offset: 0 });
+      onEquationSelectionChange?.(null);
       onSetEditingEquationId(eqObj.id);
       onSwitchToSelect();
       return;
@@ -1768,6 +1850,12 @@ export const CanvasStage: React.FC<CanvasStageProps> = ({
       }
       hasMovedRef.current = true;
       const ids = Object.keys(interaction.initialObjects);
+      // V1.11.8-7b: Marca una sola vez al iniciar el movimiento real para translucidez al arrastrar
+      if (!draggingIdsRef.current) {
+        const draggedSet = new Set(ids);
+        draggingIdsRef.current = draggedSet;
+        setDraggingIdSet(draggedSet);
+      }
       lastPointerClientRef.current = {
         clientX: pending.clientX,
         clientY: pending.clientY,
@@ -1791,21 +1879,184 @@ export const CanvasStage: React.FC<CanvasStageProps> = ({
       const useResolvedDelta = Boolean(
         resolved && (resolved.snap || resolved.tracking?.snappedPoint || resolved.guide)
       );
-      const dx =
+      let dx =
         (useResolvedDelta && resolved ? resolved.world.x : world.x) - interaction.startWorld.x;
-      const dy =
+      let dy =
         (useResolvedDelta && resolved ? resolved.world.y : world.y) - interaction.startWorld.y;
+
+      // V1.11.8-11: Guías de alineación al arrastrar cuadros de texto, agrupaciones y ecuaciones
+      const guideSession = dragGuideSessionRef.current;
+      const guideSvg = dragGuidesSvgRef.current;
+      const guideXLine = dragGuideXRef.current;
+      const guideYLine = dragGuideYRef.current;
+      let matchedXLine: { coord: number; minY: number; maxY: number } | null = null;
+      let matchedYLine: { coord: number; minX: number; maxX: number } | null = null;
+
+      if (guideSession && guideSession.candidates.length > 0) {
+        try {
+          const zoomNow = Math.max(0.15, liveViewportRef.current.zoom || 1);
+          const tolWorld = 6 / zoomNow;
+          const baseBox = guideSession.initBox;
+
+          let evalDx = dx;
+          let evalDy = dy;
+          if (!useResolvedDelta && board.snapToGrid && ids.length > 0) {
+            const firstInit = interaction.initialObjects[ids[0]];
+            if (firstInit) {
+              const sNx = snapValue(firstInit.x + dx, gSize, true, snapOffsetX);
+              const sNy = snapValue(
+                firstInit.y + dy,
+                gSize,
+                true,
+                getSnapOffsetYForWorld(firstInit.y + dy)
+              );
+              evalDx = sNx - firstInit.x;
+              evalDy = sNy - firstInit.y;
+            }
+          }
+
+          const movedMinX = baseBox.x + evalDx;
+          const movedCx = baseBox.x + baseBox.width / 2 + evalDx;
+          const movedMaxX = baseBox.x + baseBox.width + evalDx;
+          const movedMinY = baseBox.y + evalDy;
+          const movedCy = baseBox.y + baseBox.height / 2 + evalDy;
+          const movedMaxY = baseBox.y + baseBox.height + evalDy;
+
+          let bestXDist = tolWorld;
+          let bestSnapDx = 0;
+          let bestXCand: (typeof guideSession.candidates)[number] | null = null;
+          let bestXTarget = 0;
+
+          let bestYDist = tolWorld;
+          let bestSnapDy = 0;
+          let bestYCand: (typeof guideSession.candidates)[number] | null = null;
+          let bestYTarget = 0;
+
+          const cands = guideSession.candidates;
+          for (let i = 0; i < cands.length; i++) {
+            const c = cands[i];
+            const candXs = [c.minX, c.cx, c.maxX];
+            const movedXs = [movedMinX, movedCx, movedMaxX];
+            for (let a = 0; a < 3; a++) {
+              for (let b = 0; b < 3; b++) {
+                const diff = candXs[b] - movedXs[a];
+                const ad = Math.abs(diff);
+                if (ad < bestXDist) {
+                  bestXDist = ad;
+                  bestSnapDx = diff;
+                  bestXTarget = candXs[b];
+                  bestXCand = c;
+                }
+              }
+            }
+
+            const candYs = [c.minY, c.cy, c.maxY];
+            const movedYs = [movedMinY, movedCy, movedMaxY];
+            for (let a = 0; a < 3; a++) {
+              for (let b = 0; b < 3; b++) {
+                const diff = candYs[b] - movedYs[a];
+                const ad = Math.abs(diff);
+                if (ad < bestYDist) {
+                  bestYDist = ad;
+                  bestSnapDy = diff;
+                  bestYTarget = candYs[b];
+                  bestYCand = c;
+                }
+              }
+            }
+          }
+
+          const canApplyMagneticSnap = !board.snapToGrid && !useResolvedDelta;
+          if (bestXCand) {
+            if (canApplyMagneticSnap) dx += bestSnapDx;
+            const spanPad = 18 / zoomNow;
+            const fMinY = movedMinY + (canApplyMagneticSnap ? 0 : 0);
+            const fMaxY = movedMaxY;
+            matchedXLine = {
+              coord: bestXTarget,
+              minY: Math.min(fMinY, bestXCand.minY) - spanPad,
+              maxY: Math.max(fMaxY, bestXCand.maxY) + spanPad,
+            };
+          }
+          if (bestYCand) {
+            if (canApplyMagneticSnap) dy += bestSnapDy;
+            const spanPad = 18 / zoomNow;
+            const adjDx = canApplyMagneticSnap && bestXCand ? bestSnapDx : 0;
+            const fMinX = movedMinX + adjDx;
+            const fMaxX = movedMaxX + adjDx;
+            matchedYLine = {
+              coord: bestYTarget,
+              minX: Math.min(fMinX, bestYCand.minX) - spanPad,
+              maxX: Math.max(fMaxX, bestYCand.maxX) + spanPad,
+            };
+          }
+        } catch {
+          // Protege el arrastre fluido ante cualquier error de medición de guías
+        }
+      }
+
+      if (guideSvg && guideXLine && guideYLine) {
+        const zoomNow = Math.max(0.15, liveViewportRef.current.zoom || 1);
+        const dashStr = `${(5 / zoomNow).toFixed(2)} ${(3.5 / zoomNow).toFixed(2)}`;
+        const swStr = String((1.25 / zoomNow).toFixed(2));
+        if (matchedXLine || matchedYLine) {
+          guideSvg.style.display = 'block';
+          if (matchedXLine) {
+            guideXLine.style.display = 'block';
+            guideXLine.setAttribute('x1', String(matchedXLine.coord));
+            guideXLine.setAttribute('x2', String(matchedXLine.coord));
+            guideXLine.setAttribute('y1', String(matchedXLine.minY));
+            guideXLine.setAttribute('y2', String(matchedXLine.maxY));
+            guideXLine.setAttribute('stroke-width', swStr);
+            guideXLine.setAttribute('stroke-dasharray', dashStr);
+          } else {
+            guideXLine.style.display = 'none';
+          }
+          if (matchedYLine) {
+            guideYLine.style.display = 'block';
+            guideYLine.setAttribute('y1', String(matchedYLine.coord));
+            guideYLine.setAttribute('y2', String(matchedYLine.coord));
+            guideYLine.setAttribute('x1', String(matchedYLine.minX));
+            guideYLine.setAttribute('x2', String(matchedYLine.maxX));
+            guideYLine.setAttribute('stroke-width', swStr);
+            guideYLine.setAttribute('stroke-dasharray', dashStr);
+          } else {
+            guideYLine.style.display = 'none';
+          }
+        } else {
+          guideSvg.style.display = 'none';
+        }
+      }
+
       onUpdateObjects(
         ids,
         (obj) => {
           const init = interaction.initialObjects![obj.id];
           if (!init) return obj;
-          const nx = useResolvedDelta
-            ? init.x + dx
-            : snapValue(init.x + dx, gSize, board.snapToGrid, snapOffsetX);
-          const ny = useResolvedDelta
-            ? init.y + dy
-            : snapValue(init.y + dy, gSize, board.snapToGrid, getSnapOffsetYForWorld(init.y + dy));
+          const nx =
+            useResolvedDelta || !board.snapToGrid
+              ? init.x + dx
+              : snapValue(init.x + dx, gSize, true, snapOffsetX);
+          const ny =
+            useResolvedDelta || !board.snapToGrid
+              ? init.y + dy
+              : snapValue(init.y + dy, gSize, true, getSnapOffsetYForWorld(init.y + dy));
+          if (
+            obj.type === 'dimension' &&
+            init.dimAnchoredExternal &&
+            init.initialDimension &&
+            init.dimInitHandle
+          ) {
+            return applyDimensionManualOffsetDrag(
+              init.initialDimension,
+              { x: init.dimInitHandle.x + dx, y: init.dimInitHandle.y + dy },
+              cadConfig,
+              {
+                shiftKey: pending.shiftKey,
+                lockLinearAxis: init.dimLockLinearAxis,
+              }
+            );
+          }
           if (obj.type === 'dimension' && init.p1 && init.p2 && init.offsetPt) {
             const ddx = nx - init.x;
             const ddy = ny - init.y;
@@ -1977,11 +2228,14 @@ export const CanvasStage: React.FC<CanvasStageProps> = ({
             };
           }
           if (updatedBase.type === 'table') {
+            // V1.11.8-16: Permite compactar tablas libremente manteniendo anclaje en el borde opuesto
             const scaled = scaleTableToDimensions(updatedBase as TableObject, nextW, nextH);
+            const anchoredX = dir.includes('w') ? init.x + (init.width - scaled.width) : scaled.x;
+            const anchoredY = dir.includes('n') ? init.y + (init.height - scaled.height) : scaled.y;
             return {
               ...scaled,
-              x: dir.includes('w') ? init.x + (init.width - scaled.width) : scaled.x,
-              y: dir.includes('n') ? init.y + (init.height - scaled.height) : scaled.y,
+              x: anchoredX,
+              y: anchoredY,
             };
           }
           return updatedBase;
@@ -2264,6 +2518,27 @@ export const CanvasStage: React.FC<CanvasStageProps> = ({
       return;
     }
 
+    if (
+      interaction.mode === 'drag-dimension-offset' &&
+      interaction.targetId &&
+      interaction.initialDimension
+    ) {
+      hasMovedRef.current = true;
+      const initDim = interaction.initialDimension;
+      onUpdateObjects(
+        [interaction.targetId],
+        (obj) => {
+          if (obj.type !== 'dimension') return obj;
+          return applyDimensionManualOffsetDrag(initDim, world, cadConfig, {
+            shiftKey: pending.shiftKey,
+            lockLinearAxis: interaction.dimLockLinearAxis,
+          });
+        },
+        false
+      );
+      return;
+    }
+
     if (interaction.mode === 'rotate' && interaction.targetId && interaction.initialObjects) {
       const init = interaction.initialObjects[interaction.targetId];
       if (!init) return;
@@ -2428,6 +2703,8 @@ export const CanvasStage: React.FC<CanvasStageProps> = ({
     if (rect) {
       onPointerStageMove?.({ x: e.clientX - rect.left, y: e.clientY - rect.top });
     }
+    // V1.11.8-9: Registra coordenada mundial actual del puntero exclusivamente mediante ref en App
+    onCursorWorldChange?.(screenToWorld(e.clientX, e.clientY));
     if (areaExportMode && areaDrag) {
       setAreaDrag((prev) =>
         prev ? { ...prev, currentClient: { x: e.clientX, y: e.clientY } } : prev
@@ -2698,13 +2975,20 @@ export const CanvasStage: React.FC<CanvasStageProps> = ({
         if (x2 - x1 > 4 || y2 - y1 > 4) {
           const hitSet = new Set<string>();
           const groups = board.groups ?? [];
-          // OPT: 2.4 — Consulta espacial uniforme previa para lazo de selección
-          const candidates = safeRunOpt(
+          // OPT: 2.4 / V1.11.8-6 — Consulta espacial uniforme previa + cotas para lazo de selección (mantiene caja completa)
+          const spatialCandidates = safeRunOpt(
             'spatialIndex',
             () => queryObjectsInWorldBox(visibleObjects, x1, y1, x2, y2),
             () => visibleObjects
           );
-          for (const obj of candidates) {
+          const candidateMap = new Map<string, CanvasObject>();
+          for (const obj of spatialCandidates) candidateMap.set(obj.id, obj);
+          for (const obj of visibleObjects) {
+            if (obj.type === 'dimension' && !candidateMap.has(obj.id)) {
+              candidateMap.set(obj.id, obj);
+            }
+          }
+          for (const obj of candidateMap.values()) {
             if (isObjLocked(obj)) continue;
             if (
               obj.x <= x2 &&
@@ -2779,7 +3063,8 @@ export const CanvasStage: React.FC<CanvasStageProps> = ({
         locked: false,
         zIndex: nextZIndex,
         content: 'Escribe aquí...',
-        fontFamily: 'sans',
+        // V1.11.8-4: Cuadros de texto nuevos con Times New Roman por defecto
+        fontFamily: 'times',
         fontSize: toolOptions.textFontSize,
         bold: false,
         italic: false,
@@ -2799,7 +3084,7 @@ export const CanvasStage: React.FC<CanvasStageProps> = ({
             underline: false,
             fontSize: toolOptions.textFontSize,
             color: toolOptions.textColor,
-            fontFamily: 'sans',
+            fontFamily: 'times',
           },
           'left'
         ),
@@ -2854,7 +3139,8 @@ export const CanvasStage: React.FC<CanvasStageProps> = ({
         (interaction.mode === 'rotate' && hasMovedRef.current) ||
         (interaction.mode === 'group-rotate' && hasMovedRef.current) ||
         (interaction.mode === 'drag-vertex' && hasMovedRef.current) ||
-        (interaction.mode === 'drag-line-point' && hasMovedRef.current)) &&
+        (interaction.mode === 'drag-line-point' && hasMovedRef.current) ||
+        (interaction.mode === 'drag-dimension-offset' && hasMovedRef.current)) &&
       (interaction.initialObjects || interaction.groupFullObjects)
     ) {
       const ids = interaction.initialObjects
@@ -2871,9 +3157,14 @@ export const CanvasStage: React.FC<CanvasStageProps> = ({
     }
 
     preTransformSnapshotRef.current = null;
+    if (draggingIdsRef.current) {
+      draggingIdsRef.current = null;
+      setDraggingIdSet(null);
+    }
 
     hasMovedRef.current = false;
     snapHysteresisRef.current = {};
+    clearDragAlignmentGuides();
     clearAcquireDwellTimer();
     if (
       interaction.mode === 'pen' ||
@@ -2916,6 +3207,8 @@ export const CanvasStage: React.FC<CanvasStageProps> = ({
     if (cadSession.activeCommand || cadSession.pickingOrigin || arrayPickMode) return;
     if (activeTool !== 'select' || spacePressed) return;
 
+    const world = screenToWorld(e.clientX, e.clientY);
+
     // Let active inline textarea, equation editor, cell editor, or dimension input handle clicks/selection natively
     if (
       !forceDragEvenIfEditing &&
@@ -2928,24 +3221,41 @@ export const CanvasStage: React.FC<CanvasStageProps> = ({
       return;
     }
 
-    if (editingTextId && editingTextId !== obj.id) {
+    // V1.11.8-10 / V1.11.8-6 / V1.11.8-13: Hitbox ajustado al contorno visible; clics en zonas vacías traspasan al objeto subyacente o lienzo
+    let targetObj = obj;
+    if (!forceDragEvenIfEditing && (e.button === 0 || e.button === 2)) {
+      const tightHit = findTopTightHitObjectAtPoint(
+        world,
+        visibleObjects,
+        board.viewport.zoom,
+        cadConfig,
+        { includeRefBg: e.shiftKey }
+      );
+      if (!tightHit) {
+        return;
+      }
+      targetObj = tightHit;
+    }
+
+    if (editingTextId && editingTextId !== targetObj.id) {
       onSetEditingTextId(null);
     }
-    if (editingEquationId && editingEquationId !== obj.id) {
+    if (editingEquationId && editingEquationId !== targetObj.id) {
       onUpdateObjects([editingEquationId], (o) => o, true);
+      onEquationSelectionChange?.(null);
       onSetEditingEquationId(null);
     }
-    if (editingDimensionId && editingDimensionId !== obj.id) {
+    if (editingDimensionId && editingDimensionId !== targetObj.id) {
       onSetEditingDimensionId?.(null);
     }
-    if (editingTableId && (editingTableId !== obj.id || forceDragEvenIfEditing)) {
+    if (editingTableId && (editingTableId !== targetObj.id || forceDragEvenIfEditing)) {
       onSetEditingTableCell?.(null, null);
     }
 
     // Reference locked background lets clicks pass through to canvas unless Shift-clicked
     if (
-      (obj.type === 'image' || obj.type === 'document') &&
-      obj.isReferenceBackground &&
+      (targetObj.type === 'image' || targetObj.type === 'document') &&
+      targetObj.isReferenceBackground &&
       !e.shiftKey
     ) {
       return;
@@ -2962,14 +3272,14 @@ export const CanvasStage: React.FC<CanvasStageProps> = ({
     e.stopPropagation();
 
     let nextSelected: string[];
-    const groupMembers = expandSelectionToGroups(obj, visibleObjects, board.groups ?? []);
+    const groupMembers = expandSelectionToGroups(targetObj, visibleObjects, board.groups ?? []);
 
     if (e.shiftKey) {
-      const already = selectedIds.includes(obj.id);
+      const already = selectedIds.includes(targetObj.id);
       nextSelected = already
         ? selectedIds.filter((id) => !groupMembers.includes(id))
         : Array.from(new Set([...selectedIds, ...groupMembers]));
-    } else if (selectedIds.includes(obj.id)) {
+    } else if (selectedIds.includes(targetObj.id)) {
       nextSelected = selectedIds;
     } else {
       nextSelected = groupMembers;
@@ -2977,12 +3287,38 @@ export const CanvasStage: React.FC<CanvasStageProps> = ({
 
     onSelectIds(nextSelected);
 
-    if (isObjLocked(obj)) return;
+    if (isObjLocked(targetObj)) return;
 
-    const world = screenToWorld(e.clientX, e.clientY);
     const initialObjects: NonNullable<InteractionState['initialObjects']> = {};
+    const draggedObjs: CanvasObject[] = [];
+    const nextSelectedSet = new Set(nextSelected);
+    const boardObjIdSet = new Set(board.objects.map((bo) => bo.id));
     for (const o of visibleObjects) {
-      if (nextSelected.includes(o.id) && !isObjLocked(o)) {
+      if (nextSelectedSet.has(o.id) && !isObjLocked(o)) {
+        draggedObjs.push(o);
+        let dimAnchoredExternal = false;
+        let dimInitHandle: Point2D | undefined;
+        let dimLockLinearAxis: 'horizontal' | 'vertical' | 'aligned' | undefined;
+        if (o.type === 'dimension') {
+          dimAnchoredExternal = Boolean(
+            (o.anchor1 &&
+              boardObjIdSet.has(o.anchor1.objectId) &&
+              !nextSelectedSet.has(o.anchor1.objectId)) ||
+              (o.anchor2 &&
+                boardObjIdSet.has(o.anchor2.objectId) &&
+                !nextSelectedSet.has(o.anchor2.objectId)) ||
+              (o.anchor3 &&
+                boardObjIdSet.has(o.anchor3.objectId) &&
+                !nextSelectedSet.has(o.anchor3.objectId))
+          );
+          if (dimAnchoredExternal) {
+            const dm = getCachedDimensionMetrics(o, cadConfig);
+            dimInitHandle = getDimensionOffsetHandleWorld(o, dm);
+            if (o.dimKind === 'linear') {
+              dimLockLinearAxis = resolveLinearAxisMode(o.p1, o.p2, o.offsetPt, o.linearAxis);
+            }
+          }
+        }
         initialObjects[o.id] = {
           x: o.x,
           y: o.y,
@@ -2993,7 +3329,95 @@ export const CanvasStage: React.FC<CanvasStageProps> = ({
           p2: o.type === 'dimension' ? { ...o.p2 } : undefined,
           p3: o.type === 'dimension' && o.p3 ? { ...o.p3 } : undefined,
           offsetPt: o.type === 'dimension' ? { ...o.offsetPt } : undefined,
+          dimAnchoredExternal,
+          initialDimension: dimAnchoredExternal && o.type === 'dimension' ? { ...o } : undefined,
+          dimLockLinearAxis,
+          dimInitHandle,
         };
+      }
+    }
+
+    // V1.11.8-11: Precachea hasta 200 candidatos visibles para guías de alineación al arrastrar textos, ecuaciones o agrupaciones
+    clearDragAlignmentGuides();
+    const shouldShowDragGuides =
+      draggedObjs.length > 0 &&
+      (draggedObjs.some((o) => o.type === 'text' || o.type === 'equation') ||
+        draggedObjs.some((o) => Boolean(o.groupId)));
+    if (shouldShowDragGuides) {
+      try {
+        const initBox = getObjectsWorldBoundingBox(draggedObjs);
+        if (initBox) {
+          const vp = liveViewportRef.current;
+          const sz = stageSizeRef.current;
+          const zoomNow = Math.max(0.1, vp.zoom || 1);
+          const viewMinX = -vp.panX / zoomNow;
+          const viewMinY = -vp.panY / zoomNow;
+          const viewMaxX = viewMinX + sz.width / zoomNow;
+          const viewMaxY = viewMinY + sz.height / zoomNow;
+          const draggedIds = draggedObjs.map((o) => o.id);
+          const draggedIdSet = new Set(draggedIds);
+
+          const nearby = queryObjectsInWorldBox(
+            visibleObjects,
+            viewMinX,
+            viewMinY,
+            viewMaxX,
+            viewMaxY,
+            draggedIds
+          );
+          const candidates: {
+            minX: number;
+            cx: number;
+            maxX: number;
+            minY: number;
+            cy: number;
+            maxY: number;
+          }[] = [];
+
+          for (let i = 0; i < nearby.length && candidates.length < 200; i++) {
+            const cObj = nearby[i];
+            const b = getRotatedObjectWorldBounds(cObj);
+            candidates.push({
+              minX: b.x,
+              cx: b.x + b.width / 2,
+              maxX: b.x + b.width,
+              minY: b.y,
+              cy: b.y + b.height / 2,
+              maxY: b.y + b.height,
+            });
+          }
+
+          if (candidates.length < 200) {
+            for (let i = 0; i < visibleObjects.length && candidates.length < 200; i++) {
+              const cObj = visibleObjects[i];
+              if (cObj.type !== 'dimension' || draggedIdSet.has(cObj.id)) continue;
+              const tb = getObjectTightCachedBounds(cObj, cadConfig);
+              if (
+                tb.maxX < viewMinX ||
+                tb.minX > viewMaxX ||
+                tb.maxY < viewMinY ||
+                tb.minY > viewMaxY
+              ) {
+                continue;
+              }
+              const dm = getCachedDimensionMetrics(cObj, cadConfig).bbox;
+              candidates.push({
+                minX: dm.x,
+                cx: dm.x + dm.width / 2,
+                maxX: dm.x + dm.width,
+                minY: dm.y,
+                cy: dm.y + dm.height / 2,
+                maxY: dm.y + dm.height,
+              });
+            }
+          }
+
+          if (candidates.length > 0) {
+            dragGuideSessionRef.current = { initBox, candidates };
+          }
+        }
+      } catch {
+        dragGuideSessionRef.current = null;
       }
     }
 
@@ -3355,6 +3779,43 @@ export const CanvasStage: React.FC<CanvasStageProps> = ({
     });
   };
 
+  // V1.11.8-2: Manejador manual para desplazar la línea de cota directamente sobre la pizarra
+  const handleDimensionOffsetDown = (e: React.PointerEvent, obj: DimensionObject) => {
+    if (e.button !== 0) return;
+    e.stopPropagation();
+    if (isObjLocked(obj)) return;
+    setElementMenuAnchor(null);
+    const world = screenToWorld(e.clientX, e.clientY);
+    stageRef.current?.setPointerCapture(e.pointerId);
+    hasMovedRef.current = false;
+    preTransformSnapshotRef.current = captureBoardHistorySnapshot(
+      board.objects,
+      board.groups ?? []
+    ).objects;
+    const lockLinearAxis =
+      obj.dimKind === 'linear'
+        ? resolveLinearAxisMode(obj.p1, obj.p2, obj.offsetPt, obj.linearAxis)
+        : undefined;
+    setInteraction({
+      mode: 'drag-dimension-offset',
+      targetId: obj.id,
+      initialDimension: { ...obj },
+      dimLockLinearAxis: lockLinearAxis,
+      startClient: { x: e.clientX, y: e.clientY },
+      startWorld: world,
+      startViewport: board.viewport,
+      initialObjects: {
+        [obj.id]: {
+          x: obj.x,
+          y: obj.y,
+          width: obj.width,
+          height: obj.height,
+          rotation: obj.rotation,
+        },
+      },
+    });
+  };
+
   const renderShapeSvg = (obj: ShapeObject) => {
     const w = Math.max(10, obj.width);
     const h = Math.max(10, obj.height);
@@ -3483,7 +3944,7 @@ export const CanvasStage: React.FC<CanvasStageProps> = ({
   const renderDimensionNode = (obj: DimensionObject) => {
     const w = Math.max(10, obj.width);
     const h = Math.max(10, obj.height);
-    const metrics = computeDimensionMetrics(obj, cadConfig);
+    const metrics = getCachedDimensionMetrics(obj, cadConfig);
     const isEditing = editingDimensionId === obj.id;
     const commitOverride = (val: string) => {
       const cleaned = val.trim();
@@ -3555,35 +4016,53 @@ export const CanvasStage: React.FC<CanvasStageProps> = ({
     obj: CanvasObject,
     locked: boolean
   ) => {
-    e.stopPropagation();
     if (cadSession.activeCommand || cadSession.pickingOrigin || arrayPickMode) return;
-    if (obj.type === 'text' || obj.type === 'sticky') {
-      if (!locked) onSetEditingTextId(obj.id);
-    } else if (obj.type === 'equation') {
-      if (!locked) {
-        onSelectIds([obj.id]);
-        onEquationCursorChange(getInitialEditCursor(obj.latex));
-        onSetEditingEquationId(obj.id);
+    const world = screenToWorld(e.clientX, e.clientY);
+    const tightHit = findTopTightHitObjectAtPoint(
+      world,
+      visibleObjects,
+      board.viewport.zoom,
+      cadConfig,
+      { includeRefBg: false }
+    );
+    if (!tightHit) return;
+    const targetObj = tightHit;
+    const targetLocked = targetObj.id === obj.id ? locked : isObjLocked(targetObj);
+    e.stopPropagation();
+
+    if (targetObj.type === 'text' || targetObj.type === 'sticky') {
+      if (!targetLocked) onSetEditingTextId(targetObj.id);
+    } else if (targetObj.type === 'equation') {
+      if (!targetLocked) {
+        onSelectIds([targetObj.id]);
+        onEquationCursorChange(getInitialEditCursor(targetObj.latex));
+        onSetEditingEquationId(targetObj.id);
       }
-    } else if (obj.type === 'dimension') {
-      if (!locked) {
-        const m = computeDimensionMetrics(obj, cadConfig);
-        setDimOverrideDraft(obj.textOverride ?? m.formattedLabel);
-        onSelectIds([obj.id]);
-        onSetEditingDimensionId?.(obj.id);
+    } else if (targetObj.type === 'dimension') {
+      if (!targetLocked) {
+        const m = getCachedDimensionMetrics(targetObj, cadConfig);
+        setDimOverrideDraft(targetObj.textOverride ?? m.formattedLabel);
+        onSelectIds([targetObj.id]);
+        onSetEditingDimensionId?.(targetObj.id);
       }
-    } else if (obj.type === 'graph') {
-      onDoubleClickGraph(obj);
+    } else if (targetObj.type === 'graph') {
+      onDoubleClickGraph(targetObj);
     }
   };
 
-  const handleObjectContextMenu = (e: React.MouseEvent, obj: CanvasObject) => {
+  // V1.11.8-17: Helper unificado para abrir el menú contextual sobre cualquier elemento seleccionado
+  // o dentro del recuadro azul de selección múltiple (agrupada o sin agrupar), sin perder la selección.
+  const tryOpenSelectionContextMenu = (
+    e: React.MouseEvent,
+    candidateObj?: CanvasObject
+  ): boolean => {
     const targetEl = e.target as HTMLElement | null;
     if (targetEl?.closest('[contenteditable="true"], textarea, input, select')) {
-      return;
+      return true;
     }
-    e.preventDefault();
-    e.stopPropagation();
+    const world = screenToWorld(e.clientX, e.clientY);
+    onContextMenuWorldPos?.(world);
+
     const isPointCommandActive = Boolean(
       cadSession.activeCommand ||
         cadSession.pickingOrigin ||
@@ -3592,20 +4071,62 @@ export const CanvasStage: React.FC<CanvasStageProps> = ({
         areaExportMode ||
         activeTool !== 'select'
     );
-    if (
-      isPointCommandActive ||
-      interaction.mode !== 'none' ||
-      !selectedIdSet.has(obj.id)
-    ) {
-      setElementMenuAnchor(null);
-      return;
+    if (isPointCommandActive || interaction.mode !== 'none') {
+      return false;
     }
+
+    const tightHit = findTopTightHitObjectAtPoint(
+      world,
+      visibleObjects,
+      board.viewport.zoom,
+      cadConfig,
+      { includeRefBg: e.shiftKey }
+    );
+
+    const hitsSelectedObject = Boolean(
+      (tightHit && selectedIdSet.has(tightHit.id)) ||
+        (candidateObj && selectedIdSet.has(candidateObj.id))
+    );
+
+    let hitsMultiSelectionBox = false;
+    if (!hitsSelectedObject && selectedIdSet.size >= 2) {
+      const selObjs = visibleObjects.filter((o) => selectedIdSet.has(o.id));
+      const multiBox = selObjs.length >= 2 ? getObjectsWorldBoundingBox(selObjs) : null;
+      if (multiBox) {
+        const padWorld = 6 / Math.max(0.1, board.viewport.zoom);
+        hitsMultiSelectionBox =
+          world.x >= multiBox.x - padWorld &&
+          world.x <= multiBox.x + multiBox.width + padWorld &&
+          world.y >= multiBox.y - padWorld &&
+          world.y <= multiBox.y + multiBox.height + padWorld;
+      }
+    }
+
+    if (!hitsSelectedObject && !hitsMultiSelectionBox) {
+      return false;
+    }
+
+    e.preventDefault();
+    e.stopPropagation();
     const rect = stageRef.current?.getBoundingClientRect();
-    if (!rect) return;
+    if (!rect) return false;
     setElementMenuAnchor({
       x: e.clientX - rect.left,
       y: e.clientY - rect.top,
     });
+    return true;
+  };
+
+  const handleObjectContextMenu = (e: React.MouseEvent, obj: CanvasObject) => {
+    const handled = tryOpenSelectionContextMenu(e, obj);
+    if (!handled) {
+      const targetEl = e.target as HTMLElement | null;
+      if (targetEl?.closest('[contenteditable="true"], textarea, input, select')) {
+        return;
+      }
+      e.preventDefault();
+      setElementMenuAnchor(null);
+    }
   };
 
   const itemHandlersRef = useRef({
@@ -3790,10 +4311,16 @@ export const CanvasStage: React.FC<CanvasStageProps> = ({
       ? 'text'
       : 'default';
 
-  // Paleta efectiva del lienzo (independiente del tema salvo cuando el modo es 'auto')
+  // V1.11.8-14: Paleta efectiva del lienzo con soporte para el tema personalizado
   const boardTheme = useMemo(
-    () => getEffectiveBoardColors(theme, canvasBgMode, canvasBgCustomColor),
-    [theme, canvasBgMode, canvasBgCustomColor]
+    () =>
+      getEffectiveBoardColors(
+        theme,
+        canvasBgMode,
+        canvasBgCustomColor,
+        customThemeColors
+      ),
+    [theme, canvasBgMode, canvasBgCustomColor, customThemeColors]
   );
   const frameBorderStroke = useMemo(
     () => getFrameBorderStroke(boardTheme),
@@ -3874,7 +4401,7 @@ export const CanvasStage: React.FC<CanvasStageProps> = ({
                         data-export-role="dot-fill"
                         cx={1.5}
                         cy={1.5}
-                        r={1.25}
+                        r={gSize <= 12 ? 0.95 : 1.25}
                         fill={boardTheme.dotFill}
                       />
                     </pattern>
@@ -3978,13 +4505,20 @@ export const CanvasStage: React.FC<CanvasStageProps> = ({
         cursorKind,
         cursorSize,
         cursorColor,
-        boardTheme.isDarkSurface
+        boardTheme.isDarkSurface,
+        customThemeColors
       ),
-    [theme, cursorKind, cursorSize, cursorColor, boardTheme.isDarkSurface]
+    [theme, cursorKind, cursorSize, cursorColor, boardTheme.isDarkSurface, customThemeColors]
   );
   const cursorPalette = useMemo(
-    () => getThemeCursorPalette(theme, cursorColor, boardTheme.isDarkSurface),
-    [theme, cursorColor, boardTheme.isDarkSurface]
+    () =>
+      getThemeCursorPalette(
+        theme,
+        cursorColor,
+        boardTheme.isDarkSurface,
+        customThemeColors
+      ),
+    [theme, cursorColor, boardTheme.isDarkSurface, customThemeColors]
   );
 
   const selectedVisibleObjects = useMemo(() => {
@@ -3996,6 +4530,27 @@ export const CanvasStage: React.FC<CanvasStageProps> = ({
     if (selectedVisibleObjects.length <= 1) return null;
     return getObjectsWorldBoundingBox(selectedVisibleObjects);
   }, [selectedVisibleObjects]);
+
+  // V1.11.8-13: Oculta recuadros punteados individuales internos de elementos pertenecientes a grupos cuando se muestra el marco unificado
+  const hiddenGroupMemberOutlineIds = useMemo(() => {
+    const hidden = new Set<string>();
+    if (selectedVisibleObjects.length <= 1) return hidden;
+    const safeGroups = board.groups ?? [];
+    const topGroupCounts = new Map<string, number>();
+    const topGroupByObj = new Map<string, string>();
+    for (const o of selectedVisibleObjects) {
+      if (!o.groupId) continue;
+      const topId = getTopLevelGroupId(o.groupId, safeGroups);
+      topGroupByObj.set(o.id, topId);
+      topGroupCounts.set(topId, (topGroupCounts.get(topId) ?? 0) + 1);
+    }
+    for (const [objId, topId] of topGroupByObj.entries()) {
+      if ((topGroupCounts.get(topId) ?? 0) >= 2) {
+        hidden.add(objId);
+      }
+    }
+    return hidden;
+  }, [selectedVisibleObjects, board.groups]);
 
   const singleSelected =
     selectedIds.length === 1 ? visibleObjects.find((o) => o.id === selectedIds[0]) : null;
@@ -4024,15 +4579,15 @@ export const CanvasStage: React.FC<CanvasStageProps> = ({
       onPointerUp={handleStagePointerUp}
       onPointerCancel={handleStagePointerUp}
       onContextMenu={(e) => {
-        const targetEl = e.target as HTMLElement | null;
-        if (targetEl?.closest('[contenteditable="true"], textarea, input, select')) {
+        if (tryOpenSelectionContextMenu(e)) {
           return;
         }
         e.preventDefault();
+        onContextMenuWorldPos?.(screenToWorld(e.clientX, e.clientY));
         setElementMenuAnchor(null);
       }}
       onPointerEnter={() => onCanvasPointerActivity?.(true)}
-        onPointerLeave={() => {
+      onPointerLeave={() => {
         if (rafMoveRef.current !== null) {
           cancelAnimationFrame(rafMoveRef.current);
           rafMoveRef.current = null;
@@ -4041,10 +4596,12 @@ export const CanvasStage: React.FC<CanvasStageProps> = ({
         pendingPointerMoveRef.current = null;
         pendingPenSamplesRef.current = [];
         if (interaction.mode === 'none') {
+          clearDragAlignmentGuides();
           updateLiveCadCursor(null);
         }
         onCanvasPointerActivity?.(false);
         onPointerStageMove?.(null);
+        onCursorWorldChange?.(null);
       }}
       onDragOver={(e) => {
         e.preventDefault();
@@ -4175,6 +4732,28 @@ export const CanvasStage: React.FC<CanvasStageProps> = ({
                         height={fixedPage.height}
                         className="absolute inset-0 pointer-events-none"
                       >
+                        <defs>
+                          <pattern
+                            id={`${pagePatternId}-print-axis-x-${sheetIdx}`}
+                            x={fixedPage.width / 2}
+                            y={fixedPage.height / 2 - 4}
+                            width={gSize}
+                            height={8}
+                            patternUnits="userSpaceOnUse"
+                          >
+                            <line x1={0} y1={0} x2={0} y2={8} stroke={boardTheme.axisStroke} strokeWidth={1} />
+                          </pattern>
+                          <pattern
+                            id={`${pagePatternId}-print-axis-y-${sheetIdx}`}
+                            x={fixedPage.width / 2 - 4}
+                            y={fixedPage.height / 2}
+                            width={8}
+                            height={gSize}
+                            patternUnits="userSpaceOnUse"
+                          >
+                            <line x1={0} y1={0} x2={8} y2={0} stroke={boardTheme.axisStroke} strokeWidth={1} />
+                          </pattern>
+                        </defs>
                         <line
                           data-export-role="axis-stroke"
                           x1={0}
@@ -4185,6 +4764,13 @@ export const CanvasStage: React.FC<CanvasStageProps> = ({
                           strokeWidth={1.2}
                           vectorEffect="non-scaling-stroke"
                         />
+                        <rect
+                          x={0}
+                          y={fixedPage.height / 2 - 4}
+                          width={fixedPage.width}
+                          height={8}
+                          fill={`url(#${pagePatternId}-print-axis-x-${sheetIdx})`}
+                        />
                         <line
                           data-export-role="axis-stroke"
                           x1={fixedPage.width / 2}
@@ -4194,6 +4780,13 @@ export const CanvasStage: React.FC<CanvasStageProps> = ({
                           stroke={boardTheme.axisStroke}
                           strokeWidth={1.2}
                           vectorEffect="non-scaling-stroke"
+                        />
+                        <rect
+                          x={fixedPage.width / 2 - 4}
+                          y={0}
+                          width={8}
+                          height={fixedPage.height}
+                          fill={`url(#${pagePatternId}-print-axis-y-${sheetIdx})`}
                         />
                         <text
                           data-export-role="axis-text"
@@ -4345,6 +4938,28 @@ export const CanvasStage: React.FC<CanvasStageProps> = ({
                       height={fixedPage.height}
                       className="absolute inset-0 pointer-events-none"
                     >
+                      <defs>
+                        <pattern
+                          id={`${pagePatternId}-axis-x-${sheetIdx}`}
+                          x={fixedPage.width / 2}
+                          y={fixedPage.height / 2 - 4}
+                          width={gSize}
+                          height={8}
+                          patternUnits="userSpaceOnUse"
+                        >
+                          <line x1={0} y1={0} x2={0} y2={8} stroke={boardTheme.axisStroke} strokeWidth={1} />
+                        </pattern>
+                        <pattern
+                          id={`${pagePatternId}-axis-y-${sheetIdx}`}
+                          x={fixedPage.width / 2 - 4}
+                          y={fixedPage.height / 2}
+                          width={8}
+                          height={gSize}
+                          patternUnits="userSpaceOnUse"
+                        >
+                          <line x1={0} y1={0} x2={8} y2={0} stroke={boardTheme.axisStroke} strokeWidth={1} />
+                        </pattern>
+                      </defs>
                       <line
                         data-export-role="axis-stroke"
                         x1={0}
@@ -4355,6 +4970,13 @@ export const CanvasStage: React.FC<CanvasStageProps> = ({
                         strokeWidth={1.2}
                         vectorEffect="non-scaling-stroke"
                       />
+                      <rect
+                        x={0}
+                        y={fixedPage.height / 2 - 4}
+                        width={fixedPage.width}
+                        height={8}
+                        fill={`url(#${pagePatternId}-axis-x-${sheetIdx})`}
+                      />
                       <line
                         data-export-role="axis-stroke"
                         x1={fixedPage.width / 2}
@@ -4364,6 +4986,13 @@ export const CanvasStage: React.FC<CanvasStageProps> = ({
                         stroke={boardTheme.axisStroke}
                         strokeWidth={1.2}
                         vectorEffect="non-scaling-stroke"
+                      />
+                      <rect
+                        x={fixedPage.width / 2 - 4}
+                        y={0}
+                        width={8}
+                        height={fixedPage.height}
+                        fill={`url(#${pagePatternId}-axis-y-${sheetIdx})`}
                       />
                       <text
                         data-export-role="axis-text"
@@ -4471,6 +5100,7 @@ export const CanvasStage: React.FC<CanvasStageProps> = ({
                 <StaticObjectsLayer
                   objects={clippedSheetBuckets.unowned}
                   selectedIdSet={selectedIdSet}
+                  draggingIdSet={draggingIdSet}
                   layerMap={layerMap}
                   disablePointerEvents={
                     activeTool === 'pen' || activeTool === 'eraser' || activeTool === 'cut'
@@ -4481,6 +5111,7 @@ export const CanvasStage: React.FC<CanvasStageProps> = ({
                   editingTableId={editingTableId}
                   editingTableCell={editingTableCell}
                   equationCursor={equationCursor}
+                  equationSelection={equationSelection}
                   dimOverrideDraft={dimOverrideDraft}
                   zoom={board.viewport.zoom}
                   shouldClipToFrame={false}
@@ -4505,10 +5136,12 @@ export const CanvasStage: React.FC<CanvasStageProps> = ({
                   onSetEditingDimensionId={onSetEditingDimensionId}
                   onSetEditingTableCell={onSetEditingTableCell}
                   onEquationCursorChange={onEquationCursorChange}
+                  onEquationSelectionChange={onEquationSelectionChange}
                   onOpenEquationModal={onOpenEquationModal}
                   onRequestTextEquationEditor={onRequestTextEquationEditor}
                   onActiveInlineTextEquationChange={onActiveInlineTextEquationChange}
                   onRichTextSelectionSummaryChange={onRichTextSelectionSummaryChange}
+                  onPushTextParagraphsSnapshot={onPushTextParagraphsSnapshot}
                   onRepairTextBox={stableRepairTextBox}
                   onRepairTableObject={onRepairTableObject}
                   onCommitTableWithSnapshot={stableCommitTableWithSnapshot}
@@ -4547,6 +5180,7 @@ export const CanvasStage: React.FC<CanvasStageProps> = ({
                     <StaticObjectsLayer
                       objects={sheetObjs}
                       selectedIdSet={selectedIdSet}
+                      draggingIdSet={draggingIdSet}
                       layerMap={layerMap}
                       disablePointerEvents={
                         activeTool === 'pen' || activeTool === 'eraser' || activeTool === 'cut'
@@ -4557,6 +5191,7 @@ export const CanvasStage: React.FC<CanvasStageProps> = ({
                       editingTableId={editingTableId}
                       editingTableCell={editingTableCell}
                       equationCursor={equationCursor}
+                      equationSelection={equationSelection}
                       dimOverrideDraft={dimOverrideDraft}
                       zoom={board.viewport.zoom}
                       shouldClipToFrame={shouldClipToFrame}
@@ -4581,10 +5216,12 @@ export const CanvasStage: React.FC<CanvasStageProps> = ({
                       onSetEditingDimensionId={onSetEditingDimensionId}
                       onSetEditingTableCell={onSetEditingTableCell}
                       onEquationCursorChange={onEquationCursorChange}
+                      onEquationSelectionChange={onEquationSelectionChange}
                       onOpenEquationModal={onOpenEquationModal}
                       onRequestTextEquationEditor={onRequestTextEquationEditor}
                       onActiveInlineTextEquationChange={onActiveInlineTextEquationChange}
                       onRichTextSelectionSummaryChange={onRichTextSelectionSummaryChange}
+                      onPushTextParagraphsSnapshot={onPushTextParagraphsSnapshot}
                       onRepairTextBox={stableRepairTextBox}
                       onRepairTableObject={onRepairTableObject}
                       onCommitTableWithSnapshot={stableCommitTableWithSnapshot}
@@ -4702,6 +5339,7 @@ export const CanvasStage: React.FC<CanvasStageProps> = ({
         <StaticObjectsLayer
           objects={renderedObjects}
           selectedIdSet={selectedIdSet}
+          draggingIdSet={draggingIdSet}
           layerMap={layerMap}
           disablePointerEvents={
             activeTool === 'pen' || activeTool === 'eraser' || activeTool === 'cut'
@@ -4712,6 +5350,7 @@ export const CanvasStage: React.FC<CanvasStageProps> = ({
           editingTableId={editingTableId}
           editingTableCell={editingTableCell}
           equationCursor={equationCursor}
+          equationSelection={equationSelection}
           dimOverrideDraft={dimOverrideDraft}
           zoom={board.viewport.zoom}
           shouldClipToFrame={shouldClipToFrame}
@@ -4736,10 +5375,12 @@ export const CanvasStage: React.FC<CanvasStageProps> = ({
           onSetEditingDimensionId={onSetEditingDimensionId}
           onSetEditingTableCell={onSetEditingTableCell}
           onEquationCursorChange={onEquationCursorChange}
+          onEquationSelectionChange={onEquationSelectionChange}
           onOpenEquationModal={onOpenEquationModal}
           onRequestTextEquationEditor={onRequestTextEquationEditor}
           onActiveInlineTextEquationChange={onActiveInlineTextEquationChange}
           onRichTextSelectionSummaryChange={onRichTextSelectionSummaryChange}
+          onPushTextParagraphsSnapshot={onPushTextParagraphsSnapshot}
           onRepairTextBox={stableRepairTextBox}
           onRepairTableObject={onRepairTableObject}
           onCommitTableWithSnapshot={stableCommitTableWithSnapshot}
@@ -4838,6 +5479,7 @@ export const CanvasStage: React.FC<CanvasStageProps> = ({
               activeTool !== 'select'
           );
           const showSelectionOutline =
+            !hiddenGroupMemberOutlineIds.has(obj.id) &&
             editingEquationId !== obj.id &&
             editingDimensionId !== obj.id &&
             !(editingTableId === obj.id && Boolean(editingTableCell));
@@ -4849,6 +5491,8 @@ export const CanvasStage: React.FC<CanvasStageProps> = ({
             is3DSolidShape(obj.shapeKind);
           const showShapeVertices = handlesEnabled && obj.type === 'shape';
           const showLineHandles = handlesEnabled && obj.type === 'line';
+          const showDimensionOffsetHandle =
+            handlesEnabled && editingDimensionId !== obj.id && obj.type === 'dimension';
 
           // Detección de líneas o cajas muy delgadas (< 14 px en pantalla) para no amontonar cuadros de redimensionamiento
           const isThinLine =
@@ -4860,7 +5504,13 @@ export const CanvasStage: React.FC<CanvasStageProps> = ({
           const isThinWidth = obj.width * zoomNow < 14;
           const isThinHeight = obj.height * zoomNow < 14;
 
-          if (!showSelectionOutline && !showSolidMirrorBar && !showShapeVertices && !showLineHandles) {
+          if (
+            !showSelectionOutline &&
+            !showSolidMirrorBar &&
+            !showShapeVertices &&
+            !showLineHandles &&
+            !showDimensionOffsetHandle
+          ) {
             return null;
           }
 
@@ -5161,6 +5811,46 @@ export const CanvasStage: React.FC<CanvasStageProps> = ({
                   )}
                 </div>
               )}
+
+              {showDimensionOffsetHandle &&
+                obj.type === 'dimension' &&
+                (() => {
+                  const dm = getCachedDimensionMetrics(obj, cadConfig);
+                  const handlePt = getDimensionOffsetHandleWorld(obj, dm);
+                  const cursorStyle = getDimensionOffsetHandleCursor(obj);
+                  const isDraggingOffset =
+                    interaction.mode === 'drag-dimension-offset' && interaction.targetId === obj.id;
+                  const liveOffsetInfo = isDraggingOffset
+                    ? getDimensionLineOffset(obj, cadConfig)
+                    : null;
+                  return (
+                    <div
+                      onPointerDown={(e) => handleDimensionOffsetDown(e, obj)}
+                      title="Arrastrar para desplazar línea de cota (Shift: incrementos de 10 px)"
+                      style={{
+                        left: handlePt.x - obj.x,
+                        top: handlePt.y - obj.y,
+                        width: 18,
+                        height: 18,
+                        cursor: cursorStyle,
+                        transform: `translate(-50%, -50%) scale(${invZ})`,
+                      }}
+                      className="pointer-events-auto absolute flex items-center justify-center group/hdl z-20"
+                    >
+                      <span
+                        className="w-[10px] h-[10px] rotate-45 rounded-[2px] bg-[#0ea5e9] border-[1.5px] border-white transition-transform group-hover/hdl:scale-125"
+                        style={{ boxShadow: '0 0 0 1px #0f172a, 0 1px 3px rgba(0,0,0,0.32)' }}
+                      />
+                      {liveOffsetInfo && (
+                        <span
+                          className="pointer-events-none absolute -top-6 left-1/2 -translate-x-1/2 px-1.5 py-0.5 rounded bg-slate-900/90 text-white text-[10px] font-mono-tabular whitespace-nowrap shadow"
+                        >
+                          {Math.round(liveOffsetInfo.value)} px
+                        </span>
+                      )}
+                    </div>
+                  );
+                })()}
             </div>
           );
         })}
@@ -5421,6 +6111,29 @@ export const CanvasStage: React.FC<CanvasStageProps> = ({
             ))}
           </svg>
         )}
+
+        {/* V1.11.8-11: Capa temporal de guías de alineación durante el arrastre (actualización directa vía refs) */}
+        <svg
+          ref={dragGuidesSvgRef}
+          data-export-ignore="true"
+          className="overflow-visible pointer-events-none absolute top-0 left-0 z-50"
+          width={1}
+          height={1}
+          style={{ display: 'none' }}
+        >
+          <line
+            ref={dragGuideXRef}
+            stroke="var(--ui-accent, #2563eb)"
+            strokeLinecap="round"
+            style={{ display: 'none' }}
+          />
+          <line
+            ref={dragGuideYRef}
+            stroke="var(--ui-accent, #2563eb)"
+            strokeLinecap="round"
+            style={{ display: 'none' }}
+          />
+        </svg>
         </div>
       </div>
 
@@ -5577,6 +6290,7 @@ export const CanvasStage: React.FC<CanvasStageProps> = ({
         bottomBarsCollapsed={bottomBarsCollapsed}
         autoTransparentPanels={autoTransparentPanels}
         cleanWorkMode={cleanWorkMode}
+        canPaste={canPaste}
         actions={contextActions}
       />
 

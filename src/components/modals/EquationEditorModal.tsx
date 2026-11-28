@@ -17,6 +17,8 @@ import {
 } from '../../utils/equationCatalog';
 // OPT: 1.1 — Re-render cuando KaTeX termine la carga diferida
 import { useKatexReady } from '../../utils/katexLoader';
+import { ColorSwatchPicker } from '../ColorSwatchPicker';
+import { FontSizeInput } from '../FontSizeInput';
 
 interface EquationEditorModalProps {
   initialEquation?: EquationObject | null;
@@ -52,8 +54,9 @@ export const EquationEditorModal: React.FC<EquationEditorModalProps> = ({
       initialLatex ??
       (inlineMode ? 'x^2 + y^2 = r^2' : 'x = \\frac{-b \\pm \\sqrt{b^2 - 4ac}}{2a}')
   );
+  // V1.11.8-7c: Ecuaciones nuevas con tamaño 12 por defecto sin afectar existentes
   const [fontSize, setFontSize] = useState(
-    initialEquation?.fontSize || initialFontSize || (inlineMode ? 18 : 24)
+    initialEquation?.fontSize || initialFontSize || (inlineMode ? 18 : 12)
   );
   const [color, setColor] = useState(initialEquation?.color || initialColor || '#0f172a');
   const [backgroundColor, setBackgroundColor] = useState(
@@ -461,13 +464,24 @@ export const EquationEditorModal: React.FC<EquationEditorModalProps> = ({
           {/* Style Controls */}
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 pt-1">
             <div>
-              <label className="block text-xs font-medium opacity-80 mb-1">
-                Tamaño ({fontSize} px)
-              </label>
+              <div className="flex items-center justify-between gap-2 mb-1">
+                <label className="text-xs font-medium opacity-80">
+                  Tamaño (px)
+                </label>
+                <FontSizeInput
+                  variant="inspector"
+                  min={8}
+                  max={96}
+                  value={fontSize}
+                  onCommit={setFontSize}
+                  onStep={(d) => setFontSize((v) => Math.max(8, Math.min(96, v + d)))}
+                  ariaLabel="Tamaño de ecuación en modal"
+                />
+              </div>
               <input
                 type="range"
-                min={14}
-                max={48}
+                min={8}
+                max={96}
                 value={fontSize}
                 onChange={(e) => setFontSize(Number(e.target.value))}
                 className="w-full"
@@ -478,22 +492,12 @@ export const EquationEditorModal: React.FC<EquationEditorModalProps> = ({
                 Color de tinta
               </label>
               <div className="flex items-center gap-2">
-                {['#0f172a', '#1d4ed8', '#dc2626', '#059669', '#7c3aed'].map((c) => (
-                  <button
-                    key={c}
-                    type="button"
-                    onClick={() => setColor(c)}
-                    className={`w-6 h-6 rounded-full border-2 ${
-                      color === c ? 'border-current scale-110' : 'border-slate-300'
-                    }`}
-                    style={{ backgroundColor: c }}
-                  />
-                ))}
-                <input
-                  type="color"
+                <ColorSwatchPicker
                   value={color}
-                  onChange={(e) => setColor(e.target.value)}
-                  className="w-7 h-7 rounded cursor-pointer border theme-border"
+                  label={color.toUpperCase()}
+                  onPreviewColor={setColor}
+                  onCommitColor={setColor}
+                  title="Color de tinta"
                 />
               </div>
             </div>
@@ -556,11 +560,13 @@ export const EquationEditorModal: React.FC<EquationEditorModalProps> = ({
                     >
                       Blanco
                     </button>
-                    <input
-                      type="color"
-                      value={backgroundColor === 'transparent' ? '#ffffff' : backgroundColor}
-                      onChange={(e) => setBackgroundColor(e.target.value)}
-                      className="w-7 h-7 rounded cursor-pointer border theme-border"
+                    <ColorSwatchPicker
+                      compact
+                      allowTransparent
+                      value={backgroundColor}
+                      onPreviewColor={setBackgroundColor}
+                      onCommitColor={setBackgroundColor}
+                      title="Color de fondo"
                     />
                   </div>
                 </>
