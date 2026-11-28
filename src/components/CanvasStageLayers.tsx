@@ -854,7 +854,7 @@ const CanvasObjectItem = React.memo<CanvasObjectItemProps>(
                   }
                 }}
                 onPointerDown={(e) => e.stopPropagation()}
-                className="w-full h-full resize-none bg-transparent outline-none select-text cursor-text leading-snug"
+                className="w-full h-full resize-none bg-transparent outline-none select-text cursor-text leading-snug canvas-no-scrollbar"
                 style={{ fontSize: `${obj.fontSize}px`, color: obj.textColor }}
               />
             ) : (

@@ -233,6 +233,26 @@
   background: rgba(148, 163, 184, 0.55);
 }
 
+.panel-scroll::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+/* Oculta visualmente barras de desplazamiento dentro de editores de texto y ecuaciones en el lienzo */
+.canvas-no-scrollbar {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.canvas-no-scrollbar::-webkit-scrollbar,
+.canvas-no-scrollbar::-webkit-scrollbar-track,
+.canvas-no-scrollbar::-webkit-scrollbar-thumb,
+.canvas-no-scrollbar::-webkit-scrollbar-corner {
+  display: none;
+  width: 0;
+  height: 0;
+  background: transparent;
+}
+
 /* KaTeX rendering adjustments on canvas */
 .katex-canvas-node .katex {
   font-size: 1em;
@@ -241,6 +261,17 @@
 
 .katex-canvas-node .katex-display {
   margin: 0;
+  overflow: visible;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.katex-canvas-node .katex-display::-webkit-scrollbar,
+.katex-canvas-node .katex-display::-webkit-scrollbar-corner {
+  display: none;
+  width: 0;
+  height: 0;
+  background: transparent;
 }
 
 .katex-tile .katex {

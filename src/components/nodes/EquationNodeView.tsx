@@ -453,7 +453,7 @@ export const EquationNodeView: React.FC<EquationNodeViewProps> = React.memo(({
         }}
       >
         <div
-          className="max-w-full max-h-full overflow-auto panel-scroll"
+          className="max-w-full overflow-visible canvas-no-scrollbar"
           dangerouslySetInnerHTML={{ __html: html }}
         />
       </div>
@@ -529,7 +529,7 @@ export const EquationNodeView: React.FC<EquationNodeViewProps> = React.memo(({
       <div
         data-scrollable-content="true"
         style={{ overscrollBehavior: 'contain' }}
-        className="w-full h-full flex overflow-auto panel-scroll cursor-text"
+        className="w-full h-full flex overflow-auto canvas-no-scrollbar cursor-text"
         onMouseDown={handleSurfaceMouseDown}
         onClick={(e) => e.stopPropagation()}
       >

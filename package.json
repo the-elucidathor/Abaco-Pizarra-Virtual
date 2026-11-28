@@ -4,7 +4,7 @@
   "author": "The Elucidathor",
   "license": "MIT",
   "private": true,
-  "version": "1.11.8",
+  "version": "1.11.8-1",
   "main": "electron/main.cjs",
   "type": "module",
   "scripts": {
